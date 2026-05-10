@@ -1,10 +1,8 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from './config.service';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
 import * as Joi from 'joi';
 
 @Module({
-  providers: [ConfigService],
   imports: [NestConfigModule.forRoot({
     isGlobal: true,
     validationSchema: Joi.object({
@@ -14,6 +12,5 @@ import * as Joi from 'joi';
     })
   })
   ],
-  exports: [ConfigService]
 })
 export class ConfigModule { }
