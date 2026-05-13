@@ -6,12 +6,12 @@ import { Model } from 'mongoose';
 
 @Injectable()
 export class ReservationRepository extends AbstractRepository<ReservationDocument> {
-    protected readonly logger = new Logger(ReservationRepository.name);
+  protected readonly logger = new Logger(ReservationRepository.name);
 
-    constructor(
-        @InjectModel(ReservationDocument.name)
-        reservationModel: Model<ReservationDocument>,
-    ) {
-        super(reservationModel);
-    }
+  constructor(
+    @InjectModel(ReservationDocument.name)
+    reservationModel: Model<ReservationDocument>,
+  ) {
+    super(reservationModel);
+  }
 }

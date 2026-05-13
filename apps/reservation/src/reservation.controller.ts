@@ -6,7 +6,6 @@ import {
   Patch,
   Param,
   Delete,
-  UseGuards,
 } from '@nestjs/common';
 import { ReservationService } from './reservation.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
@@ -14,12 +13,10 @@ import { UpdateReservationDto } from './dto/update-reservation.dto';
 
 @Controller('reservation')
 export class ReservationController {
-  constructor(private readonly reservationsService: ReservationService) { }
+  constructor(private readonly reservationsService: ReservationService) {}
 
   @Post()
-  async create(
-    @Body() createReservationDto: CreateReservationDto,
-  ) {
+  async create(@Body() createReservationDto: CreateReservationDto) {
     return this.reservationsService.create(createReservationDto);
   }
 
