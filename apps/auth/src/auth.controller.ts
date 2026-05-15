@@ -1,11 +1,16 @@
-import { Controller, Post, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Res,
+  UseGuards,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
-import { MessagePattern, Payload } from '@nestjs/microservices';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { CurrentUser } from '@app/common';
 import { UserDocument } from './users/models/user.schema';
-import { Response } from 'express';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { Request, Response } from 'express';
 
 @Controller('auth')
 export class AuthController {
@@ -17,14 +22,19 @@ export class AuthController {
     @CurrentUser() user: UserDocument,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const jwt = await this.authService.login(user, response);
-    response.send(jwt);
+    const tokens = await this.authService.login(user, response);
+    response.send(tokens);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @MessagePattern('authenticate')
-  async authenticate(@Payload() data: any) {
-    console.log('Authenticated user: ------------>>>>>>>>>>>>>>', data.user);
-    return data.user;
+  @Post('refresh')
+  async refresh(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const refreshToken = request.cookies?.Refresh;
+    if (!refreshToken) {
+      throw new UnauthorizedException();
+    }
+    return this.authService.refreshToken(refreshToken, response);
   }
 }
