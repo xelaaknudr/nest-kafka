@@ -25,4 +25,9 @@ export class AuthController {
   async authenticate(@Payload() data: any) {
     return data.user;
   }
+
+  @MessagePattern('get_user')
+  async getUser(@Payload() data: any) {
+    return data.user;
+  }
 }
