@@ -5,6 +5,7 @@ import { LocalAuthGuard } from './guards/local-auth.guard';
 import { CurrentUser } from '@app/common';
 import { UserDocument } from './users/models/user.schema';
 import { Response } from 'express';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -20,13 +21,10 @@ export class AuthController {
     response.send(jwt);
   }
 
+  @UseGuards(JwtAuthGuard)
   @MessagePattern('authenticate')
   async authenticate(@Payload() data: any) {
-    return data.user;
-  }
-
-  @MessagePattern('get_user')
-  async getUser(@Payload() data: any) {
+    console.log('Authenticated user: ------------>>>>>>>>>>>>>>', data.user);
     return data.user;
   }
 }
