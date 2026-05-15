@@ -18,7 +18,6 @@ export class AuthController {
   ) {
     const jwt = await this.authService.login(user, response);
     response.send(jwt);
-    console.log(response);
   }
 
   @MessagePattern('authenticate')
