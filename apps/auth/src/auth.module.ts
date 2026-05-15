@@ -1,18 +1,18 @@
 import { Module } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 import { UsersModule } from './users/users.module';
-import { LoggerModule } from '@app/common';
+import { LoggerModule, RedisModule } from '@app/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import * as Joi from 'joi';
 import { LocalStrategy } from './strategies/local.strategy';
-import { JwtStrategy } from './strategies/jwt.strategy';
 
 @Module({
   imports: [
     UsersModule,
     LoggerModule,
+    RedisModule,
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: Joi.object({
@@ -23,6 +23,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
         MONGODB_HOST: Joi.string().required(),
         MONGODB_PORT: Joi.number().required(),
         MONGODB_DATABASE: Joi.string().required(),
+        REDIS_HOST: Joi.string().required(),
+        REDIS_PORT: Joi.number().required(),
+        JWT_REFRESH_EXPIRATION: Joi.number().required(),
       }),
     }),
     JwtModule.registerAsync({
@@ -37,6 +40,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, LocalStrategy, JwtStrategy],
+  providers: [AuthService, LocalStrategy],
 })
 export class AuthModule {}
