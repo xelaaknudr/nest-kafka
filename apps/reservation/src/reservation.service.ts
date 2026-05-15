@@ -21,7 +21,7 @@ export class ReservationService {
   }
 
   async findOne(_id: string) {
-    return this.reservationRepository.findOne({ _id });
+    return this.reservationRepository.findOneOrThrow({ _id });
   }
 
   async update(_id: string, updateReservationDto: UpdateReservationDto) {

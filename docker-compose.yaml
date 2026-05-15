@@ -1,0 +1,56 @@
+services:
+  reservations:
+    image: reservations:latest
+    container_name: reservations
+    build:
+      context: .
+      dockerfile: ./apps/reservation/Dockerfile
+      target: development
+    command: pnpm run start:dev reservation
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/usr/src/app
+    env_file:
+      - ./apps/reservation/.env
+    environment:
+      - MONGODB_HOST=mongo
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  auth:
+    image: auth:latest
+    container_name: auth
+    build:
+      context: .
+      dockerfile: ./apps/auth/Dockerfile
+      target: development
+    command: pnpm run start:dev auth
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/usr/src/app
+    env_file:
+      - ./apps/auth/.env
+    environment:
+      - MONGODB_HOST=mongo
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo-data:

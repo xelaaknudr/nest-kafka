@@ -1,7 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { MongooseModule, ModelDefinition } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
-import { ConfigModule } from '../config/config.module';
 
 @Module({})
 export class DatabaseModule {
@@ -10,7 +9,6 @@ export class DatabaseModule {
       module: DatabaseModule,
       imports: [
         MongooseModule.forRootAsync({
-          imports: [ConfigModule],
           useFactory: (configService: ConfigService) => {
             const uri = configService.get<string>(`${envPrefix}_URI`);
             if (uri) {
