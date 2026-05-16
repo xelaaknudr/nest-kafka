@@ -17,10 +17,10 @@ export class PaymentsService {
     private readonly notificationsService: ClientProxy,
   ) {}
 
-  async createCharge({ card, amount, email }: PaymentsCreateChargeDto) {
+  async createCharge({ token, amount, email }: PaymentsCreateChargeDto) {
     const paymentMethod = await this.stripe.paymentMethods.create({
       type: 'card',
-      card,
+      card: { token },
     });
 
     const paymentIntent = await this.stripe.paymentIntents.create({
