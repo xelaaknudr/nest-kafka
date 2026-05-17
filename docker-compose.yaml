@@ -18,6 +18,25 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+  
+  notifications:
+    image: notifications:latest
+    container_name: notifications
+    build:
+      context: .
+      dockerfile: ./apps/notifications/Dockerfile
+      target: development
+    command: pnpm run start:dev notifications
+    volumes:
+      - .:/usr/src/app
+    env_file:
+      - ./apps/reservation/.env
+    environment:
+      - MONGODB_HOST=mongo
+    depends_on:
+      mongo:
+        condition: service_healthy
+
 
   auth:
     image: auth:latest
@@ -39,6 +58,8 @@ services:
       mongo:
         condition: service_healthy
   payments:
+    image: payments:latest
+    container_name: payments
     build:
       context: .
       dockerfile: ./apps/payments/Dockerfile

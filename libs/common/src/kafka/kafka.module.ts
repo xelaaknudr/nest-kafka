@@ -1,11 +1,10 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
-import { KafkaService } from './kafka.service';
 
 @Module({
-  providers: [KafkaService],
-  exports: [KafkaService],
+  providers: [],
+  exports: [],
 })
 export class KafkaModule {
   static register(name: string): DynamicModule {
@@ -31,8 +30,8 @@ export class KafkaModule {
           },
         ]),
       ],
-      providers: [KafkaService],
-      exports: [KafkaService],
+      providers: [],
+      exports: [],
     };
   }
 }
