@@ -30,7 +30,7 @@ services:
     volumes:
       - .:/usr/src/app
     env_file:
-      - ./apps/reservation/.env
+      - ./apps/notifications/.env
     environment:
       - MONGODB_HOST=mongo
     depends_on:
