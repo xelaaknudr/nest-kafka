@@ -11,8 +11,7 @@ import {
 import { ReservationService } from './reservation.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { UpdateReservationDto } from './dto/update-reservation.dto';
-import { CurrentUser, JwtAuthGuard } from '@app/common';
-import { UserDocument } from 'apps/auth/src/users/models/user.schema';
+import { CurrentUser, JwtAuthGuard, UserDocument } from '@app/common';
 
 @Controller('reservation')
 export class ReservationController {
