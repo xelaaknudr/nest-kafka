@@ -12,6 +12,7 @@ RUN pnpm install
 
 COPY apps/reservation apps/reservation
 COPY libs libs
+RUN cd apps/reservation && pnpm install
 
 RUN pnpm run build
 
