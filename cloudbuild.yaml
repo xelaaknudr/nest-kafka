@@ -1,59 +1,5 @@
 steps:
-  # auth
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'build',
-        '-t',
-        'us-east4-docker.pkg.dev/roze-501818/auth/production',
-        '-f',
-        'apps/auth/Dockerfile',
-        '.'
-      ]
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'push',
-        'us-east4-docker.pkg.dev/roze-501818/auth/production',
-      ]
-
-  # notifications
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'build',
-        '-t',
-        'us-east4-docker.pkg.dev/roze-501818/notifications/production',
-        '-f',
-        'apps/notifications/Dockerfile',
-        '.'
-      ]
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'push',
-        'us-east4-docker.pkg.dev/roze-501818/notifications/production',
-      ]
-
-  # payments
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'build',
-        '-t',
-        'us-east4-docker.pkg.dev/roze-501818/payments/production',
-        '-f',
-        'apps/payments/Dockerfile',
-        '.'
-      ]
-  - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'push',
-        'us-east4-docker.pkg.dev/roze-501818/payments/production',
-      ]
-
-  # reservation
+  # Reservations
   - name: 'gcr.io/cloud-builders/docker'
     args:
       [
@@ -62,12 +8,51 @@ steps:
         'us-east4-docker.pkg.dev/roze-501818/reservations/production',
         '-f',
         'apps/reservation/Dockerfile',
-        '.'
+        '.',
       ]
   - name: 'gcr.io/cloud-builders/docker'
     args:
-      [
-        'push',
-        'us-east4-docker.pkg.dev/roze-501818/reservations/production',
-      ]
+      ['push', 'us-east4-docker.pkg.dev/roze-501818/reservations/production']
 
+  # Auth
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'build',
+        '-t',
+        'us-east4-docker.pkg.dev/roze-501818/auth/production',
+        '-f',
+        'apps/auth/Dockerfile',
+        '.',
+      ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-east4-docker.pkg.dev/roze-501818/auth/production']
+
+  # Notifications
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'build',
+        '-t',
+        'us-east4-docker.pkg.dev/roze-501818/notifications/production',
+        '-f',
+        'apps/notifications/Dockerfile',
+        '.',
+      ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      ['push', 'us-east4-docker.pkg.dev/roze-501818/notifications/production']
+
+  # Payments
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      [
+        'build',
+        '-t',
+        'us-east4-docker.pkg.dev/roze-501818/payments/production',
+        '-f',
+        'apps/payments/Dockerfile',
+        '.',
+      ]
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-east4-docker.pkg.dev/roze-501818/payments/production']
