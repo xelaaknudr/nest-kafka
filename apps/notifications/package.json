@@ -12,5 +12,8 @@
   "packageManager": "pnpm@10.7.0",
   "dependencies": {
     "nodemailer": "^8.0.7"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^8.0.1"
   }
 }
