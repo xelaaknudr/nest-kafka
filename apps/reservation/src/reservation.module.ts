@@ -18,9 +18,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
       isGlobal: true,
       validationSchema: Joi.object({
         HTTP_PORT: Joi.number().required(),
-        MONGODB_HOST: Joi.string().required(),
-        MONGODB_PORT: Joi.number().required(),
-        MONGODB_DATABASE: Joi.string().required(),
+        MONGODB_URI: Joi.string().required(),
         AUTH_PORT: Joi.number().required(),
         AUTH_HOST: Joi.string().required(),
         PAYMENTS_HOST: Joi.string().required(),
