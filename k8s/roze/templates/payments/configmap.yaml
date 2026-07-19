@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+
+  name: payments-config
+
+
+data:
+
+  TCP_PORT: "3003"
+
+  NOTIFICATIONS_HOST: notifications
+
+  NOTIFICATIONS_PORT: "3004"
+
+  TEST: "100"

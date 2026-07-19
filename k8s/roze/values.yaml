@@ -1,0 +1,53 @@
+auth:
+  image:
+    repository: us-east4-docker.pkg.dev/roze-501818/auth/production
+    tag: latest
+
+  mongodbUri: mongodb+srv://root:8WdSMIFtrUU3fgb0@roze.1ivcru9.mongodb.net/auth?appName=roze
+
+  jwtSecret: 4YdOfiPtyv1aYAjSdr7MidPOnmZHtT4AdLAvQldpHvD2SROwEXS7E1JQHhUn0XEy0bOCCHnI8zIxWKocI7ASb7Kh3uQ0spn9FsZ
+
+
+reservations:
+  image:
+    repository: us-east4-docker.pkg.dev/roze-501818/reservations/production
+    tag: latest
+
+  mongodbUri: mongodb+srv://root:8WdSMIFtrUU3fgb0@roze.1ivcru9.mongodb.net/reservations?appName=roze
+
+  jwtSecret: 4YdOfiPtyv1aYAjSdr7MidPOnmZHtT4AdLAvQldpHvD2SROwEXS7E1JQHhUn0XEy0bOCCHnI8zIxWKocI7ASb7Kh3uQ0spn9FsZ
+
+
+payments:
+  image:
+    repository: us-east4-docker.pkg.dev/roze-501818/payments/production
+    tag: latest
+
+  mongodbUri: mongodb+srv://root:8WdSMIFtrUU3fgb0@roze.1ivcru9.mongodb.net/payments?appName=roze
+
+  stripeSecretKey: sk_test_xxxxxxxxx
+
+  googleOAuthClientId: xxxxx
+
+  googleOAuthClientSecret: xxxxx
+
+  googleOAuthRefreshToken: xxxxx
+
+  smtpUser: xxxxx
+
+
+notifications:
+
+  image:
+
+    repository: us-east4-docker.pkg.dev/roze-501818/notifications/production
+
+    tag: latest
+
+  googleOAuthClientId: "yiuyiuy"
+
+  googleOAuthClientSecret: "yuiyiu"
+
+  googleOAuthRefreshToken: "yuiy"
+
+  smtpUser: "yiuyiuy"

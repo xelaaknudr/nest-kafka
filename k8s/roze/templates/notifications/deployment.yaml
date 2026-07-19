@@ -1,20 +1,64 @@
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
+  name: notifications
   labels:
     app: notifications
-  name: notifications
 spec:
   replicas: 2
   selector:
     matchLabels:
       app: notifications
-  strategy: {}
+  strategy:
+
+    type: RollingUpdate
+
+
   template:
+
+
     metadata:
+
+
       labels:
+
         app: notifications
+
+
+      annotations:
+
+        checksum/config: {{ (.Files.Get "templates/notifications/configmap.yaml") | sha256sum }}
+
+        checksum/secret: {{ (.Files.Get "templates/notifications/secret.yaml") | sha256sum }}
+
+
     spec:
+
+
+      imagePullSecrets:
+
+
+        - name: gcr-json-key
+
+
       containers:
-        - image: us-east4-docker.pkg.dev/roze-501818/notifications/production
-          name: notifications
+
+
+        - name: notifications
+
+
+          image: "{{ .Values.notifications.image.repository }}:{{ .Values.notifications.image.tag }}"
+
+
+          envFrom:
+
+
+            - configMapRef:
+
+                name: notifications-config
+
+
+            - secretRef:
+
+                name: notifications-secret
