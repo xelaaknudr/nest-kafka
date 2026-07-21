@@ -10,7 +10,7 @@ data:
 
   HTTP_PORT: "3000"
 
-  AUTH_HOST: auth-tcp
+  AUTH_HOST: auth
 
   AUTH_PORT: "3002"
 
