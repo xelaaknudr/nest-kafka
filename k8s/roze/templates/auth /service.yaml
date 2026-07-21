@@ -5,14 +5,14 @@ metadata:
   name: auth-tcp
 
   labels:
-    app: auth
+    app: auth-tcp
 
 spec:
 
   type: ClusterIP
 
   selector:
-    app: auth
+    app: auth-tcp
 
   ports:
     - name: tcp

@@ -4,13 +4,13 @@ kind: Service
 metadata:
   name: auth-http
   labels:
-    app: auth
+    app: auth-http
 
 spec:
   type: NodePort
 
   selector:
-    app: auth
+    app: auth-http
 
   ports:
     - name: http
