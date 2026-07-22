@@ -34,7 +34,9 @@ export class ReservationService {
           return of({ id: 'mock_invoice_id' });
         }),
         switchMap((res) => {
-          this.logger.log('Payment charge successful, creating reservation');
+          this.logger.log(
+            'Payment charge successful, creating reservation and it is working',
+          );
           return this.reservationRepository.create({
             ...createReservationDto,
             invoiceId: res.id,
