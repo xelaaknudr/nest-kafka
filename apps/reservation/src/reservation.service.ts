@@ -19,6 +19,7 @@ export class ReservationService {
     createReservationDto: CreateReservationDto,
     { email, _id: userId }: UserDocument,
   ) {
+    this.logger.log('it is working');
     return this.paymentsService
       .send('create_charge', {
         ...createReservationDto.charge,
