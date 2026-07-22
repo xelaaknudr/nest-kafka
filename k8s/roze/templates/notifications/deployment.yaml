@@ -50,6 +50,8 @@ spec:
 
           image: "{{ .Values.notifications.image.repository }}:{{ .Values.notifications.image.tag }}"
 
+          imagePullPolicy: Always
+
 
           envFrom:
 

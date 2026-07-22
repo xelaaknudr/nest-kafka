@@ -1,7 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ReservationController } from './reservation.controller';
 import { ReservationService } from './reservation.service';
-import { AUTH_SERVICE, DatabaseModule, PAYMENTS_SERVICE } from '@app/common';
+import {
+  AUTH_SERVICE,
+  DatabaseModule,
+  HealthModule,
+  PAYMENTS_SERVICE,
+} from '@app/common';
 import { ReservationRepository } from './reservation.repository';
 import {
   ReservationDocument,
@@ -25,6 +30,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
         PAYMENTS_PORT: Joi.number().required(),
       }),
     }),
+    HealthModule,
     DatabaseModule.register('MONGODB'),
     DatabaseModule.forFeature([
       { name: ReservationDocument.name, schema: ReservationSchema },

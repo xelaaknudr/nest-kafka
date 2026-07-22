@@ -49,6 +49,8 @@ spec:
 
           image: "{{ .Values.reservations.image.repository }}:{{ .Values.reservations.image.tag }}"
 
+          imagePullPolicy: Always
+
 
           envFrom:
 
