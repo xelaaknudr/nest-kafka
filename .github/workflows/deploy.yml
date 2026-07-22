@@ -1,0 +1,75 @@
+name: 🚀 CD — Deploy to GKE
+
+on:
+  workflow_run:
+    workflows:
+      - '🔨 CD — Build & Push Images'
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Helm upgrade → GKE
+    runs-on: ubuntu-latest
+    environment: production
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: 🔐 Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: ☸️ Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
+          location: ${{ secrets.GKE_CLUSTER_ZONE }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: 🪖 Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: 🔍 Helm dry-run (validate before deploy)
+        run: |
+          helm upgrade --install roze ./k8s/roze \
+            --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --dry-run
+
+      - name: 🚀 Helm upgrade — deploy all services
+        run: |
+          helm upgrade --install roze ./k8s/roze \
+            --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --atomic \
+            --timeout 5m \
+            --cleanup-on-fail
+
+      - name: ✅ Verify rollout — all services
+        run: |
+          kubectl rollout status deployment/reservations --timeout=3m
+          kubectl rollout status deployment/auth --timeout=3m
+          kubectl rollout status deployment/notifications --timeout=3m
+          kubectl rollout status deployment/payments --timeout=3m
+
+      - name: 🏷️ Tag deployed commit in Git
+        run: |
+          DEPLOY_TAG="deployed-$(date +'%Y%m%d-%H%M%S')"
+          git tag $DEPLOY_TAG ${{ github.event.workflow_run.head_sha }}
+          git push origin $DEPLOY_TAG
