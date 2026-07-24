@@ -15,11 +15,11 @@ jobs:
   build:
     name: Build — ${{ matrix.service }}
     runs-on: ubuntu-latest
-    # Пропускаем если CI упал
+    # Skip if CI failed
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     strategy:
-      fail-fast: false # Остальные сервисы продолжают билдиться даже если один упал
+      fail-fast: false # Other services continue building even if one fails
       matrix:
         include:
           - service: reservation
@@ -42,7 +42,7 @@ jobs:
       - name: 📥 Checkout
         uses: actions/checkout@v4
         with:
-          # Берём sha того коммита который прошёл CI
+          # Use the SHA of the commit that passed CI
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: 🔐 Authenticate to Google Cloud

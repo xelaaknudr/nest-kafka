@@ -5,32 +5,32 @@ auth:
   image:
     repository: us-east4-docker.pkg.dev/roze-501818/auth/production
     tag: latest
-  mongodbUri: "mongodb+srv://root:ПАРОЛЬ@roze.1ivcru9.mongodb.net/auth?appName=roze"
-  jwtSecret: "ВАШ_JWT_SECRET"
+  mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/auth?appName=roze"
+  jwtSecret: "YOUR_JWT_SECRET"
 
 reservations:
   image:
     repository: us-east4-docker.pkg.dev/roze-501818/reservations/production
     tag: latest
-  mongodbUri: "mongodb+srv://root:ПАРОЛЬ@roze.1ivcru9.mongodb.net/reservations?appName=roze"
-  jwtSecret: "ВАШ_JWT_SECRET"
+  mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/reservations?appName=roze"
+  jwtSecret: "YOUR_JWT_SECRET"
 
 payments:
   image:
     repository: us-east4-docker.pkg.dev/roze-501818/payments/production
     tag: latest
-  mongodbUri: "mongodb+srv://root:ПАРОЛЬ@roze.1ivcru9.mongodb.net/payments?appName=roze"
+  mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/payments?appName=roze"
   stripeSecretKey: "sk_test_xxxxxxxxx"
-  googleOAuthClientId: "ВАШ_CLIENT_ID"
-  googleOAuthClientSecret: "ВАШ_CLIENT_SECRET"
-  googleOAuthRefreshToken: "ВАШ_REFRESH_TOKEN"
-  smtpUser: "ВАШ_SMTP_USER"
+  googleOAuthClientId: "YOUR_CLIENT_ID"
+  googleOAuthClientSecret: "YOUR_CLIENT_SECRET"
+  googleOAuthRefreshToken: "YOUR_REFRESH_TOKEN"
+  smtpUser: "YOUR_SMTP_USER"
 
 notifications:
   image:
     repository: us-east4-docker.pkg.dev/roze-501818/notifications/production
     tag: latest
-  googleOAuthClientId: "ВАШ_CLIENT_ID"
-  googleOAuthClientSecret: "ВАШ_CLIENT_SECRET"
-  googleOAuthRefreshToken: "ВАШ_REFRESH_TOKEN"
-  smtpUser: "ВАШ_SMTP_USER"
+  googleOAuthClientId: "YOUR_CLIENT_ID"
+  googleOAuthClientSecret: "YOUR_CLIENT_SECRET"
+  googleOAuthRefreshToken: "YOUR_REFRESH_TOKEN"
+  smtpUser: "YOUR_SMTP_USER"

@@ -10,7 +10,7 @@ export class NotificationsController {
   @UsePipes(new ValidationPipe())
   @EventPattern('notify_email')
   async notifyEmail(@Payload() data: NotifyEmailDto) {
-    console.log(data, 'сработало событие и письмо отправилось');
+    console.log(data, 'event triggered and email sent');
     await this.notificationsService.notifyEmail(data);
   }
 }
