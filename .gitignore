@@ -1,3 +1,9 @@
+key.json
+github-ci-key.json
+k8s/roze/gcpsm-credentials.secret.yaml
+
+k8s/roze/values.local.yaml
+
 # compiled output
 /dist
 node_modules/
