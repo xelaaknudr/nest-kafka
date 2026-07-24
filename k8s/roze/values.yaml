@@ -1,6 +1,6 @@
 global:
-  # true  → секреты берутся из Google Secret Manager (production)
-  # false → секреты берутся из values.local.yaml (локальная разработка)
+  # true  → secrets are fetched from Google Secret Manager (production)
+  # false → secrets are fetched from values.local.yaml (local development)
   useExternalSecrets: true
 
 auth:
