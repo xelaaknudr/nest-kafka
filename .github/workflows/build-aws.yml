@@ -4,7 +4,7 @@ on:
   # Запускается только если CI прошёл успешно
   workflow_run:
     workflows:
-      - "✅ CI — Lint, Typecheck & Tests"
+      - '✅ CI — Lint, Typecheck & Tests'
     types: [completed]
     branches: [main]
 
