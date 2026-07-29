@@ -2,6 +2,8 @@ global:
   # true  → secrets are fetched from Google Secret Manager (production)
   # false → secrets are fetched from values.local.yaml (local development)
   useExternalSecrets: true
+  # "gcp" или "aws" — определяет к какому Secret Manager подключаться
+  cloudProvider: "gcp"
 
 auth:
   image:

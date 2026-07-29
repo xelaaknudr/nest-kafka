@@ -45,6 +45,7 @@ jobs:
       - name: 🚀 Helm upgrade — deploy all services
         run: |
           helm upgrade --install roze-aws ./k8s/roze \
+            --set global.cloudProvider=aws \
             --set reservations.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/reservation \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set auth.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/auth \
