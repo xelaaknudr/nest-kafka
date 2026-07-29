@@ -1,7 +1,6 @@
 name: 🚀 CD (AWS) — Deploy to EKS
 
 on:
-  # Запускается только если сборка в AWS прошла успешно
   workflow_run:
     workflows:
       - "🔨 CD (AWS) — Build & Push Images"
@@ -17,7 +16,6 @@ jobs:
     name: Helm upgrade → AWS EKS
     runs-on: ubuntu-latest
     environment: aws-production
-    # Пропускаем если Build упал
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
@@ -46,15 +44,14 @@ jobs:
 
       - name: 🚀 Helm upgrade — deploy all services
         run: |
-          # Переопределяем repository и tag, чтобы использовать образы из Amazon ECR вместо GCP
           helm upgrade --install roze-aws ./k8s/roze \
-            --set reservations.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze-reservations \
+            --set reservations.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/reservation \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set auth.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze-auth \
+            --set auth.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/auth \
             --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set notifications.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze-notifications \
+            --set notifications.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/notifications \
             --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set payments.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze-payments \
+            --set payments.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/payments \
             --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
             --atomic \
             --timeout 5m \

@@ -1,10 +1,9 @@
 name: 🔨 CD (AWS) — Build & Push Images
 
 on:
-  # Запускается только если CI прошёл успешно
   workflow_run:
     workflows:
-      - '✅ CI — Lint, Typecheck & Tests'
+      - "✅ CI — Lint, Typecheck & Tests"
     types: [completed]
     branches: [main]
 
@@ -16,7 +15,6 @@ jobs:
   build:
     name: Build (AWS) — ${{ matrix.service }}
     runs-on: ubuntu-latest
-    # Пропускаем если CI упал
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     strategy:
@@ -25,20 +23,19 @@ jobs:
         include:
           - service: reservation
             dockerfile: apps/reservation/Dockerfile
-            # Замените ECR_REGISTRY на ваш реальный после создания в AWS
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-reservations
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/reservation
 
           - service: auth
             dockerfile: apps/auth/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-auth
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/auth
 
           - service: notifications
             dockerfile: apps/notifications/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-notifications
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/notifications
 
           - service: payments
             dockerfile: apps/payments/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-payments
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/payments
 
     steps:
       - name: 📥 Checkout
