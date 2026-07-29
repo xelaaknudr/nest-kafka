@@ -1,0 +1,71 @@
+name: 🔨 CD (AWS) — Build & Push Images
+
+on:
+  # Запускается только если CI прошёл успешно
+  workflow_run:
+    workflows:
+      - '✅ CI — Lint, Typecheck & Tests'
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: build-aws-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (AWS) — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    # Пропускаем если CI упал
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: reservation
+            dockerfile: apps/reservation/Dockerfile
+            # Замените ECR_REGISTRY на ваш реальный после создания в AWS
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-reservations
+
+          - service: auth
+            dockerfile: apps/auth/Dockerfile
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-auth
+
+          - service: notifications
+            dockerfile: apps/notifications/Dockerfile
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-notifications
+
+          - service: payments
+            dockerfile: apps/payments/Dockerfile
+            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze-payments
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: 🔐 Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: 🐳 Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 🏗️ Build image — ${{ matrix.service }}
+        run: |
+          docker build \
+            -t ${{ matrix.image }}:${{ github.event.workflow_run.head_sha }} \
+            -t ${{ matrix.image }}:latest \
+            -f ${{ matrix.dockerfile }} \
+            .
+
+      - name: 📤 Push image — ${{ matrix.service }}
+        run: |
+          docker push ${{ matrix.image }}:${{ github.event.workflow_run.head_sha }}
+          docker push ${{ matrix.image }}:latest
