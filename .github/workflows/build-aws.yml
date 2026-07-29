@@ -23,19 +23,19 @@ jobs:
         include:
           - service: reservation
             dockerfile: apps/reservation/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/reservation
+            image_name: roze/reservation
 
           - service: auth
             dockerfile: apps/auth/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/auth
+            image_name: roze/auth
 
           - service: notifications
             dockerfile: apps/notifications/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/notifications
+            image_name: roze/notifications
 
           - service: payments
             dockerfile: apps/payments/Dockerfile
-            image: ${{ secrets.AWS_ECR_REGISTRY }}/roze/payments
+            image_name: roze/payments
 
     steps:
       - name: 📥 Checkout
@@ -57,12 +57,12 @@ jobs:
       - name: 🏗️ Build image — ${{ matrix.service }}
         run: |
           docker build \
-            -t ${{ matrix.image }}:${{ github.event.workflow_run.head_sha }} \
-            -t ${{ matrix.image }}:latest \
+            -t ${{ secrets.AWS_ECR_REGISTRY }}/${{ matrix.image_name }}:${{ github.event.workflow_run.head_sha }} \
+            -t ${{ secrets.AWS_ECR_REGISTRY }}/${{ matrix.image_name }}:latest \
             -f ${{ matrix.dockerfile }} \
             .
 
       - name: 📤 Push image — ${{ matrix.service }}
         run: |
-          docker push ${{ matrix.image }}:${{ github.event.workflow_run.head_sha }}
-          docker push ${{ matrix.image }}:latest
+          docker push ${{ secrets.AWS_ECR_REGISTRY }}/${{ matrix.image_name }}:${{ github.event.workflow_run.head_sha }}
+          docker push ${{ secrets.AWS_ECR_REGISTRY }}/${{ matrix.image_name }}:latest
