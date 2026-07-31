@@ -3,7 +3,7 @@ name: 🚀 CD (AWS) — Deploy to EKS
 on:
   workflow_run:
     workflows:
-      - "🔨 CD (AWS) — Build & Push Images"
+      - '🔨 CD (AWS) — Build & Push Images'
     types: [completed]
     branches: [main]
 
@@ -53,13 +53,14 @@ jobs:
             --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set payments.image.repository=${{ secrets.AWS_ECR_REGISTRY }}/roze/payments \
             --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --debug \
             --atomic \
-            --timeout 5m \
+            --timeout 15m \
             --cleanup-on-fail
 
       - name: ✅ Verify rollout — all services
         run: |
-          kubectl rollout status deployment/reservations --timeout=3m
-          kubectl rollout status deployment/auth --timeout=3m
-          kubectl rollout status deployment/notifications --timeout=3m
-          kubectl rollout status deployment/payments --timeout=3m
+          kubectl rollout status deployment/reservations --timeout=5m
+          kubectl rollout status deployment/auth --timeout=5m
+          kubectl rollout status deployment/notifications --timeout=5m
+          kubectl rollout status deployment/payments --timeout=5m
