@@ -1,4 +1,6 @@
 global:
+  # gcp | aws
+  cloudProvider: gcp
   # true  → secrets are fetched from Google Secret Manager (production)
   # false → secrets are fetched from values.local.yaml (local development)
   useExternalSecrets: true
