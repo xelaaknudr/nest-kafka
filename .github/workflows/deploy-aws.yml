@@ -42,6 +42,15 @@ jobs:
         with:
           version: v3.16.0
 
+      - name: 🔓 Unlock stuck Helm release (if pending)
+        run: |
+          STATUS=$(helm status roze-aws --output json 2>/dev/null | jq -r '.info.status' || echo "not-found")
+          echo "Current release status: $STATUS"
+          if [[ "$STATUS" == "pending-install" || "$STATUS" == "pending-upgrade" || "$STATUS" == "pending-rollback" ]]; then
+            echo "Release is stuck in $STATUS, rolling back..."
+            helm rollback roze-aws 0 || helm uninstall roze-aws || true
+          fi
+
       - name: 🚀 Helm upgrade — deploy all services
         run: |
           helm upgrade --install roze-aws ./k8s/roze \
