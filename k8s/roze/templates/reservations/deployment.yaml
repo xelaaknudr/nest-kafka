@@ -39,8 +39,9 @@ spec:
     spec:
 
       imagePullSecrets:
-
+        {{- if eq .Values.global.cloudProvider "gcp" }}
         - name: gcr-json-key
+        {{- end }}
 
 
       containers:
