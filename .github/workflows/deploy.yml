@@ -20,16 +20,22 @@ jobs:
 
     steps:
       - name: 📥 Checkout
+        # STEP 1: Checkout the source code.
+        # We use the exact commit (head_sha) that was successfully built in the previous workflow (Build & Push Images).
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: 🔐 Authenticate to Google Cloud
+        # STEP 2: Authenticate to Google Cloud.
+        # We use a service account (via GCP_SA_KEY secret) that has deployment permissions for our cluster.
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: ☸️ Get GKE credentials
+        # STEP 3: Get Kubernetes (GKE) credentials.
+        # This configures the cluster access so tools like kubectl and helm know where to connect.
         uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
@@ -37,11 +43,15 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: 🪖 Install Helm
+        # STEP 4: Install the Helm CLI on the CI server (GitHub Actions).
         uses: azure/setup-helm@v4
         with:
           version: v3.16.0
 
       - name: 🔍 Helm dry-run (validate before deploy)
+        # STEP 5: Validation (Dry Run).
+        # The --dry-run flag renders all templates without applying them to the cluster.
+        # It prevents syntax errors from breaking production by failing the pipeline early.
         run: |
           helm upgrade --install roze ./k8s/roze \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
@@ -51,7 +61,21 @@ jobs:
             --dry-run
 
       - name: 🚀 Helm upgrade — deploy all services
+        # STEP 6: Actual production deployment (helm upgrade).
         run: |
+          # WHY DO WE NEED --set *.image.tag FLAGS?
+          # In the previous CI pipeline ("Build & Push Images"), Docker images were built 
+          # and pushed with a unique tag - the commit hash (head_sha).
+          # Here, we force Helm to ignore default tags in values.yaml and use these freshly built images.
+          
+          # WHY DO WE NEED SECURITY FLAGS (--atomic, --timeout, --cleanup-on-fail)?
+          # --atomic: Guarantees "all-or-nothing" deployment. If the app crashes on startup 
+          #           (e.g., Node.js throws an error), Helm will AUTOMATICALLY roll back 
+          #           to the previous working version. Zero downtime for users.
+          # --timeout 5m: Gives the cluster exactly 5 minutes for new pods to reach the 'Ready' state. 
+          #               If they fail to do so, the deployment fails and triggers a rollback.
+          # --cleanup-on-fail: Deletes any leftover "garbage" (stuck pods) if the deployment fails.
+          
           helm upgrade --install roze ./k8s/roze \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
@@ -62,6 +86,9 @@ jobs:
             --cleanup-on-fail
 
       - name: ✅ Verify rollout — all services
+        # STEP 7: Wait for readiness (Rollout).
+        # This blocks the pipeline and monitors pod startup in real-time.
+        # It provides extra assurance that Kubernetes successfully switched traffic to the new containers.
         run: |
           kubectl rollout status deployment/reservations --timeout=3m
           kubectl rollout status deployment/auth --timeout=3m
@@ -69,6 +96,9 @@ jobs:
           kubectl rollout status deployment/payments --timeout=3m
 
       - name: 🏷️ Tag deployed commit in Git
+        # STEP 8: Tag the deployed commit in Git history.
+        # If the deployment succeeds, we attach a "deployed-YYYYMMDD-HHMMSS" tag to the current commit.
+        # This allows us to easily track which exact version is currently running in production.
         run: |
           DEPLOY_TAG="deployed-$(date +'%Y%m%d-%H%M%S')"
           git tag $DEPLOY_TAG ${{ github.event.workflow_run.head_sha }}

@@ -1,8 +1,8 @@
 global:
-  # gcp | aws
-  cloudProvider: gcp
-  # true  → secrets are fetched from Google Secret Manager (production)
-  # false → secrets are fetched from values.local.yaml (local development)
+  # ШАГ 2: Главный рубильник (Helm Values).
+  # Здесь определяется логика того, откуда брать секреты.
+  # true  -> Секреты тянутся из облака (Google Cloud) с помощью External Secrets Operator.
+  # false -> Секреты берутся локально прямо из этого файла (секция ниже).
   useExternalSecrets: true
 
 auth:
