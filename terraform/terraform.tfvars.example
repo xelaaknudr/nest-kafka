@@ -1,0 +1,8 @@
+# Скопируй в terraform.tfvars и заполни реальными значениями.
+# terraform.tfvars — в .gitignore, не попадает в репозиторий.
+
+project_id    = "YOUR_PROJECT_ID"
+region        = "us-east4"
+cluster_name  = "roze-cluster"
+github_owner  = "YOUR_GITHUB_USERNAME"
+github_repo   = "nest-kafka"

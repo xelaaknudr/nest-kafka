@@ -3,21 +3,21 @@ global:
 
 auth:
   image:
-    repository: us-east4-docker.pkg.dev/roze-501818/auth/production
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/auth/production
     tag: latest
   mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/auth?appName=roze"
   jwtSecret: "YOUR_JWT_SECRET"
 
 reservations:
   image:
-    repository: us-east4-docker.pkg.dev/roze-501818/reservations/production
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/reservations/production
     tag: latest
   mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/reservations?appName=roze"
   jwtSecret: "YOUR_JWT_SECRET"
 
 payments:
   image:
-    repository: us-east4-docker.pkg.dev/roze-501818/payments/production
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/payments/production
     tag: latest
   mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/payments?appName=roze"
   stripeSecretKey: "sk_test_xxxxxxxxx"
@@ -28,7 +28,7 @@ payments:
 
 notifications:
   image:
-    repository: us-east4-docker.pkg.dev/roze-501818/notifications/production
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/notifications/production
     tag: latest
   googleOAuthClientId: "YOUR_CLIENT_ID"
   googleOAuthClientSecret: "YOUR_CLIENT_SECRET"

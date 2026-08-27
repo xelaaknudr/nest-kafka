@@ -18,7 +18,11 @@ jobs:
     environment: production
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
-    steps:
+    # WIF требует права на получение OIDC токена от GitHub.
+    permissions:
+      id-token: write
+      contents: write  # write нужен для git tag в последнем шаге
+
       - name: 📥 Checkout
         # STEP 1: Checkout the source code.
         # We use the exact commit (head_sha) that was successfully built in the previous workflow (Build & Push Images).
@@ -27,11 +31,11 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: 🔐 Authenticate to Google Cloud
-        # STEP 2: Authenticate to Google Cloud.
-        # We use a service account (via GCP_SA_KEY secret) that has deployment permissions for our cluster.
+        # Тот же WIF что и в build.yml — никакого JSON ключа.
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SA_EMAIL }}
 
       - name: ☸️ Get GKE credentials
         # STEP 3: Get Kubernetes (GKE) credentials.
@@ -50,15 +54,15 @@ jobs:
 
       - name: 🔍 Helm dry-run (validate before deploy)
         # STEP 5: Validation (Dry Run).
-        # The --dry-run flag renders all templates without applying them to the cluster.
+        # The  flag renders all templates without applying them to the cluster.
         # It prevents syntax errors from breaking production by failing the pipeline early.
         run: |
-          helm upgrade --install roze ./k8s/roze \
+          helm upgrade --install l3v5h ./k8s/l3v5h \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --dry-run
+            
 
       - name: 🚀 Helm upgrade — deploy all services
         # STEP 6: Actual production deployment (helm upgrade).
@@ -76,7 +80,7 @@ jobs:
           #               If they fail to do so, the deployment fails and triggers a rollback.
           # --cleanup-on-fail: Deletes any leftover "garbage" (stuck pods) if the deployment fails.
           
-          helm upgrade --install roze ./k8s/roze \
+          helm upgrade --install l3v5h ./k8s/l3v5h \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \

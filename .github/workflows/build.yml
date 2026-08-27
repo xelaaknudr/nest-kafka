@@ -15,8 +15,15 @@ jobs:
   build:
     name: Build — ${{ matrix.service }}
     runs-on: ubuntu-latest
-    # Skip if CI failed
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    # WIF (Workload Identity Federation) требует этих прав.
+    # id-token: write  — разрешает GitHub выдать workflow OIDC токен.
+    #                    Без него WIF не работает — Google не сможет проверить кто мы.
+    # contents: read   — стандартное право для checkout репозитория.
+    permissions:
+      id-token: write
+      contents: read
 
     strategy:
       fail-fast: false # Other services continue building even if one fails
@@ -24,31 +31,34 @@ jobs:
         include:
           - service: reservation
             dockerfile: apps/reservation/Dockerfile
-            image: us-east4-docker.pkg.dev/roze-501818/reservations/production
+            image: us-east4-docker.pkg.dev/l3v5h-506810/reservations/production
 
           - service: auth
             dockerfile: apps/auth/Dockerfile
-            image: us-east4-docker.pkg.dev/roze-501818/auth/production
+            image: us-east4-docker.pkg.dev/l3v5h-506810/auth/production
 
           - service: notifications
             dockerfile: apps/notifications/Dockerfile
-            image: us-east4-docker.pkg.dev/roze-501818/notifications/production
+            image: us-east4-docker.pkg.dev/l3v5h-506810/notifications/production
 
           - service: payments
             dockerfile: apps/payments/Dockerfile
-            image: us-east4-docker.pkg.dev/roze-501818/payments/production
+            image: us-east4-docker.pkg.dev/l3v5h-506810/payments/production
 
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
         with:
-          # Use the SHA of the commit that passed CI
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: 🔐 Authenticate to Google Cloud
+        # WIF: GitHub отправляет OIDC токен в Google.
+        # Google проверяет: токен из xelaaknudr/nest-kafka? → да → выдаёт временные credentials.
+        # Никакого JSON ключа в GitHub Secrets — только WIF_PROVIDER и WIF_SA_EMAIL.
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SA_EMAIL }}
 
       - name: 🐳 Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-east4-docker.pkg.dev --quiet
