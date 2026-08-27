@@ -23,6 +23,7 @@ jobs:
       id-token: write
       contents: write  # write нужен для git tag в последнем шаге
 
+    steps:
       - name: 📥 Checkout
         # STEP 1: Checkout the source code.
         # We use the exact commit (head_sha) that was successfully built in the previous workflow (Build & Push Images).
