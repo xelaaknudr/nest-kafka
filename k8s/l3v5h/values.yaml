@@ -1,0 +1,26 @@
+global:
+  # ШАГ 2: Главный рубильник (Helm Values).
+  # Здесь определяется логика того, откуда брать секреты.
+  # true  -> Секреты тянутся из облака (Google Cloud) с помощью External Secrets Operator.
+  # false -> Секреты берутся локально прямо из этого файла (секция ниже).
+  useExternalSecrets: true
+
+auth:
+  image:
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/auth/production
+    tag: latest
+
+reservations:
+  image:
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/reservations/production
+    tag: latest
+
+payments:
+  image:
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/payments/production
+    tag: latest
+
+notifications:
+  image:
+    repository: us-east4-docker.pkg.dev/l3v5h-506810/notifications/production
+    tag: latest

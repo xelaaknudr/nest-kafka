@@ -61,3 +61,15 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Terraform
+# State файлы — содержат данные о реальных ресурсах в облаке.
+# Хранятся в GCS (Remote Backend), не в git.
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform.lock.hcl
+
+# tfvars с реальными значениями (project_id, secrets и т.д.) — не в git.
+# Используй terraform.tfvars.example как шаблон.
+terraform/terraform.tfvars
