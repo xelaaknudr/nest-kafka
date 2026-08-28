@@ -7,6 +7,7 @@ on:
     types: [completed]
     branches: [main]
 
+# Запрещаем параллельные деплои — они опасны и могут привести к гонке условий.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -16,31 +17,37 @@ jobs:
     name: Helm upgrade → GKE
     runs-on: ubuntu-latest
     environment: production
+    # Запускаемся только если предыдущий пайплайн (сборка образов) завершился успешно.
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
-    # WIF требует права на получение OIDC токена от GitHub.
+    # WIF (Workload Identity Federation) требует права на получение OIDC-токена от GitHub.
+    # Это позволяет аутентифицироваться в GCP без хранения JSON-ключей в секретах.
     permissions:
       id-token: write
-      contents: write  # write нужен для git tag в последнем шаге
+      contents: write # нужен для git tag в финальном шаге
 
     steps:
+      # ─────────────────────────────────────────────────────────────
+      # ЭТАП 1: Подготовка окружения
+      # ─────────────────────────────────────────────────────────────
+
       - name: 📥 Checkout
-        # STEP 1: Checkout the source code.
-        # We use the exact commit (head_sha) that was successfully built in the previous workflow (Build & Push Images).
+        # Берём точный коммит (head_sha), который был успешно собран предыдущим пайплайном.
+        # Это гарантирует, что мы деплоим именно тот код, из которого были собраны образы.
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: 🔐 Authenticate to Google Cloud
-        # Тот же WIF что и в build.yml — никакого JSON ключа.
+        # Используем Workload Identity Federation вместо JSON-ключа сервисного аккаунта.
+        # Это более безопасный способ — токен выдаётся на один запуск и автоматически истекает.
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.WIF_SA_EMAIL }}
 
       - name: ☸️ Get GKE credentials
-        # STEP 3: Get Kubernetes (GKE) credentials.
-        # This configures the cluster access so tools like kubectl and helm know where to connect.
+        # Настраиваем kubectl/helm для работы с нашим конкретным GKE-кластером.
         uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
@@ -48,52 +55,68 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: 🪖 Install Helm
-        # STEP 4: Install the Helm CLI on the CI server (GitHub Actions).
         uses: azure/setup-helm@v4
         with:
           version: v3.16.0
 
       - name: 📦 Helm dependency build
-        # Fetch external dependencies (e.g., Bitnami PostgreSQL)
+        # Скачиваем внешние зависимости чарта (Bitnami PostgreSQL).
+        # Они не хранятся в Git, поэтому их нужно загружать при каждом запуске.
         run: helm dependency build ./k8s/l3v5h
 
-      - name: 🔍 Helm dry-run (validate before deploy)
-        # STEP 5: Validation (Dry Run).
-        # The flag renders all templates without applying them to the cluster.
-        # It prevents syntax errors from breaking production by failing the pipeline early.
-        run: |
-          helm upgrade --install l3v5h ./k8s/l3v5h \
-            --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
-            
+      # ─────────────────────────────────────────────────────────────
+      # ЭТАП 2: Валидация (без применения изменений)
+      # ─────────────────────────────────────────────────────────────
 
-      - name: 🚀 Helm upgrade — deploy all services
-        # STEP 6: Actual production deployment (helm upgrade).
+      - name: 🔍 Helm dry-run
+        # Рендерим все шаблоны и проверяем их синтаксис без отправки в кластер.
+        # Это позволяет поймать ошибки в YAML/шаблонах до того, как они сломают прод.
         run: |
           helm upgrade --install l3v5h ./k8s/l3v5h \
+            --dry-run \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set payments.image.tag=${{ github.event.workflow_run.head_sha }}
 
-      - name: 🗄️ Run Database Migrations
-        # STEP 7: Execute migrations from the CI runner using port-forwarding.
-        # This MUST run before rollout verification because pods won't become 'Ready' until tables exist.
-        run: |
-          npm i -g pnpm@9
-          pnpm install --frozen-lockfile
+      # ─────────────────────────────────────────────────────────────
+      # ЭТАП 3: Миграции базы данных
+      #
+      # ВАЖНО: Миграции запускаются ДО деплоя нового кода намеренно.
+      # Это классический подход "expand-first":
+      #   1. Сначала расширяем схему БД (миграции). Схема остаётся совместимой со старым кодом.
+      #   2. Затем деплоим новый код. Поды стартуют и сразу видят готовые таблицы.
+      #
+      # Если бы мы делали наоборот (сначала деплой, потом миграции), новые поды
+      # падали бы с ошибкой "table not found" до завершения миграций.
+      # ─────────────────────────────────────────────────────────────
 
+      - name: 📦 Install Node.js dependencies for migrations
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: 🗄️ Run Database Migrations
+        # Мы запускаем TypeORM CLI прямо на раннере, а не внутри пода.
+        # Причина: продакшн-образы собраны через Webpack в один main.js
+        # и не содержат ts-node и .ts файлов миграций.
+        # Доступ к базе обеспечивается через kubectl port-forward.
+        run: |
           export POSTGRES_PASSWORD=$(kubectl get secret postgres-secret -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 --decode)
           export POSTGRES_USER=postgres
           export POSTGRES_DB=nestdb
           export POSTGRES_HOST=127.0.0.1
           export POSTGRES_PORT=5432
 
-          echo "Waiting for postgres pod to be Running..."
+          echo "Waiting for postgres pod to be Ready..."
           kubectl wait pod -l app.kubernetes.io/name=postgresql --for=condition=Ready --timeout=5m
 
+          echo "Opening tunnel to PostgreSQL..."
           kubectl port-forward svc/l3v5h-postgresql 5432:5432 &
           PF_PID=$!
           sleep 5
@@ -101,24 +124,37 @@ jobs:
           echo "Running Auth migrations..."
           pnpm run migration:run:auth
 
-          echo "Running Reservation migrations..."
+          echo "Running Reservations migrations..."
           pnpm run migration:run:reservation
 
           kill $PF_PID
 
-      - name: ✅ Verify rollout — all services
-        # STEP 8: Wait for readiness (Rollout).
-        # Now that migrations are done, the crash-looping pods will recover and become Ready.
+      # ─────────────────────────────────────────────────────────────
+      # ЭТАП 4: Деплой
+      # ─────────────────────────────────────────────────────────────
+
+      - name: 🚀 Helm upgrade — deploy all services
         run: |
-          kubectl rollout status deployment/reservations --timeout=5m
-          kubectl rollout status deployment/auth --timeout=5m
-          kubectl rollout status deployment/notifications --timeout=5m
-          kubectl rollout status deployment/payments --timeout=5m
+          helm upgrade --install l3v5h ./k8s/l3v5h \
+            --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
+            --atomic \
+            --timeout 5m \
+            --cleanup-on-fail
+          # --atomic:           "всё или ничего" — если хоть один под не стартует за timeout,
+          #                     Helm автоматически откатит весь релиз к предыдущей рабочей версии.
+          # --timeout 5m:       максимальное время ожидания готовности подов.
+          # --cleanup-on-fail:  удаляет зависшие поды при неудачном деплое.
+
+      # ─────────────────────────────────────────────────────────────
+      # ЭТАП 5: Финализация
+      # ─────────────────────────────────────────────────────────────
 
       - name: 🏷️ Tag deployed commit in Git
-        # STEP 8: Tag the deployed commit in Git history.
-        # If the deployment succeeds, we attach a "deployed-YYYYMMDD-HHMMSS" tag to the current commit.
-        # This allows us to easily track which exact version is currently running in production.
+        # Ставим Git-тег на задеплоенный коммит для удобного отслеживания того,
+        # какая версия кода сейчас запущена в проде.
         run: |
           DEPLOY_TAG="deployed-$(date +'%Y%m%d-%H%M%S')"
           git tag $DEPLOY_TAG ${{ github.event.workflow_run.head_sha }}
