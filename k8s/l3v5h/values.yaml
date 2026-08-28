@@ -27,6 +27,8 @@ notifications:
 
 # Настройки для in-cluster базы данных
 postgresql:
+  image:
+    tag: latest
   auth:
     existingSecret: "postgres-secret"
     secretKeys:
