@@ -8,35 +8,16 @@ services:
       target: development
     command: pnpm run start:dev reservation
     ports:
-      - "3000:3000"
+      - '3000:3000'
     volumes:
       - .:/usr/src/app
     env_file:
       - ./apps/reservation/.env
     environment:
-      - MONGODB_HOST=mongo
+      - POSTGRES_HOST=postgres
     depends_on:
-      mongo:
+      postgres:
         condition: service_healthy
-  
-  notifications:
-    image: notifications:latest
-    container_name: notifications
-    build:
-      context: .
-      dockerfile: ./apps/notifications/Dockerfile
-      target: development
-    command: pnpm run start:dev notifications
-    volumes:
-      - .:/usr/src/app
-    env_file:
-      - ./apps/notifications/.env
-    environment:
-      - MONGODB_HOST=mongo
-    depends_on:
-      mongo:
-        condition: service_healthy
-
 
   auth:
     image: auth:latest
@@ -47,16 +28,17 @@ services:
       target: development
     command: pnpm run start:dev auth
     ports:
-      - "3001:3001"
+      - '3001:3001'
     volumes:
       - .:/usr/src/app
     env_file:
       - ./apps/auth/.env
     environment:
-      - MONGODB_HOST=mongo
+      - POSTGRES_HOST=postgres
     depends_on:
-      mongo:
+      postgres:
         condition: service_healthy
+
   payments:
     image: payments:latest
     container_name: payments
@@ -70,18 +52,48 @@ services:
     volumes:
       - .:/usr/src/app
 
-  mongo:
-    image: mongo
-    container_name: mongo
-    ports:
-      - "27017:27017"
+  notifications:
+    image: notifications:latest
+    container_name: notifications
+    build:
+      context: .
+      dockerfile: ./apps/notifications/Dockerfile
+      target: development
+    command: pnpm run start:dev notifications
     volumes:
-      - mongo-data:/data/db
+      - .:/usr/src/app
+    env_file:
+      - ./apps/notifications/.env
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    env_file:
+      - .env
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    env_file:
+      - .env
+    ports:
+      - '5050:80'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
 
 volumes:
-  mongo-data:
+  postgres-data:
+  pgadmin-data:

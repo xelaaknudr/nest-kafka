@@ -100,6 +100,16 @@ jobs:
           kubectl rollout status deployment/notifications --timeout=3m
           kubectl rollout status deployment/payments --timeout=3m
 
+      - name: 🗄️ Run Database Migrations
+        # STEP 7.5: Execute migrations directly inside the running pods.
+        # This uses zero extra cluster resources since it runs inside existing containers.
+        run: |
+          echo "Running Auth migrations..."
+          kubectl exec deployment/auth -- pnpm run migration:run:auth
+
+          echo "Running Reservation migrations..."
+          kubectl exec deployment/reservations -- pnpm run migration:run:reservation
+
       - name: 🏷️ Tag deployed commit in Git
         # STEP 8: Tag the deployed commit in Git history.
         # If the deployment succeeds, we attach a "deployed-YYYYMMDD-HHMMSS" tag to the current commit.

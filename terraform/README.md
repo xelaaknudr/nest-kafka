@@ -71,3 +71,16 @@ VPC: l3v5h-506810-vpc
 Используется VPC-native кластер (современный стандарт GKE).
 Ноды имеют доступ к Google APIs (Artifact Registry, Logging) без публичного IP
 через `private_ip_google_access = true`.
+
+### 3. Установка External Secrets Operator (ESO)
+ESO нужен для синхронизации секретов из GCP в Kubernetes:
+```bash
+helm repo add external-secrets https://charts.external-secrets.io
+helm repo update
+
+# ВАЖНО: Аннотация связывает K8s SA с GCP SA (Workload Identity)
+helm install external-secrets external-secrets/external-secrets \
+  --namespace external-secrets \
+  --create-namespace \
+  --set serviceAccount.annotations."iam\.gke\.io/gcp-service-account"=eso-sa@l3v5h-506810.iam.gserviceaccount.com
+```

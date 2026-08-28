@@ -1,38 +1,80 @@
 services:
   e2e:
     build:
+      context: .
       dockerfile: ./Dockerfile
     volumes:
       - ./specs:/usr/src/app/specs
+    command: sh -c "while ! wget -q --spider http://auth:3001/; do echo 'Waiting for auth...'; sleep 3; done; while ! wget -q --spider http://reservations:3000/; do echo 'Waiting for reservations...'; sleep 3; done; pnpm test"
     depends_on:
       - reservations
       - auth
       - payments
       - notifications
-      - mongo
+      - postgres
+
   reservations:
-    image: us-east4-docker.pkg.dev/roze-501818/reservations/production
+    build:
+      context: ..
+      dockerfile: ./apps/reservation/Dockerfile
+      target: development
+    command: sh -c "pnpm run migration:run:reservation && pnpm run start:dev reservation"
+    volumes:
+      - ..:/usr/src/app
     env_file:
       - ../apps/reservation/.env
-    ports:
-      - '3000:3000'
+    environment:
+      - POSTGRES_HOST=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   auth:
-    image: us-east4-docker.pkg.dev/roze-501818/auth/production
+    build:
+      context: ..
+      dockerfile: ./apps/auth/Dockerfile
+      target: development
+    command: sh -c "pnpm run migration:run:auth && pnpm run start:dev auth"
+    volumes:
+      - ..:/usr/src/app
     env_file:
       - ../apps/auth/.env
-    ports:
-      - '3001:3001'
+    environment:
+      - POSTGRES_HOST=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   payments:
-    image: us-east4-docker.pkg.dev/roze-501818/payments/production
-    ports:
-      - '3003:3003'
+    build:
+      context: ..
+      dockerfile: ./apps/payments/Dockerfile
+      target: development
+    command: pnpm run start:dev payments
+    volumes:
+      - ..:/usr/src/app
     env_file:
       - ../apps/payments/.env
+
   notifications:
-    image: us-east4-docker.pkg.dev/roze-501818/notifications/production
-    ports:
-      - '3004:3004'
+    build:
+      context: ..
+      dockerfile: ./apps/notifications/Dockerfile
+      target: development
+    command: pnpm run start:dev notifications
+    volumes:
+      - ..:/usr/src/app
     env_file:
       - ../apps/notifications/.env
-  mongo:
-    image: mongo
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: e2e-postgres
+    env_file:
+      - ../.env
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

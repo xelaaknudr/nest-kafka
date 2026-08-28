@@ -24,3 +24,16 @@ notifications:
   image:
     repository: us-east4-docker.pkg.dev/l3v5h-506810/notifications/production
     tag: latest
+
+# Настройки для in-cluster базы данных
+postgresql:
+  auth:
+    existingSecret: "postgres-secret"
+    secretKeys:
+      adminPasswordKey: "POSTGRES_PASSWORD"
+    database: "nestdb"
+  architecture: standalone
+  primary:
+    persistence:
+      enabled: true
+      size: 1Gi

@@ -7,12 +7,13 @@ import * as bcrypt from 'bcryptjs';
 import { CreateUserDto } from './dto/create-user.dto';
 import { GetUserDto } from './dto/get-user.dto';
 import { UsersRepository } from './users.repository';
+import { UserEntity } from '@app/common';
 
 @Injectable()
 export class UsersService {
   constructor(private readonly usersRepository: UsersRepository) {}
 
-  async create(createUserDto: CreateUserDto) {
+  async create(createUserDto: CreateUserDto): Promise<UserEntity> {
     const candidate = await this.usersRepository.findOne({
       email: createUserDto.email,
     });
@@ -21,13 +22,15 @@ export class UsersService {
       throw new UnprocessableEntityException('Email already exists.');
     }
 
-    return this.usersRepository.create({
-      ...createUserDto,
-      password: await bcrypt.hash(createUserDto.password, 10),
-    });
+    return this.usersRepository.create(
+      new UserEntity({
+        ...createUserDto,
+        password: await bcrypt.hash(createUserDto.password, 10),
+      }),
+    );
   }
 
-  async verifyUser(email: string, password: string) {
+  async verifyUser(email: string, password: string): Promise<UserEntity> {
     const user = await this.usersRepository.findOneOrThrow({ email });
     const passwordIsValid = await bcrypt.compare(password, user.password);
     if (!passwordIsValid) {
@@ -36,11 +39,11 @@ export class UsersService {
     return user;
   }
 
-  async getUser(getUserDto: GetUserDto) {
+  async getUser(getUserDto: GetUserDto): Promise<UserEntity> {
     return this.usersRepository.findOneOrThrow(getUserDto);
   }
 
-  async getUsers() {
+  async getUsers(): Promise<UserEntity[]> {
     return this.usersRepository.find({});
   }
 }

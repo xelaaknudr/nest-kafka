@@ -1,36 +1,45 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { MongooseModule, ModelDefinition } from '@nestjs/mongoose';
+import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
+import { EntityClassOrSchema } from '@nestjs/typeorm/dist/interfaces/entity-class-or-schema.type';
+
+export interface DatabaseModuleOptions {
+  schema?: string;
+}
 
 @Module({})
 export class DatabaseModule {
-  static register(envPrefix: string = 'MONGODB'): DynamicModule {
+  static forRoot(options: DatabaseModuleOptions = {}): DynamicModule {
+    const { schema = 'public' } = options;
+
     return {
       module: DatabaseModule,
       imports: [
-        MongooseModule.forRootAsync({
-          useFactory: (configService: ConfigService) => {
-            const uri = configService.get<string>(`${envPrefix}_URI`);
-            if (uri) {
-              return { uri };
-            }
-
-            const host = configService.get<string>(`${envPrefix}_HOST`);
-            const port = configService.get<string>(`${envPrefix}_PORT`);
-            const dbName = configService.get<string>(`${envPrefix}_DATABASE`);
-
-            return {
-              uri: `mongodb://${host}:${port}/${dbName}`,
-            };
-          },
+        TypeOrmModule.forRootAsync({
+          useFactory: (configService: ConfigService): TypeOrmModuleOptions => ({
+            type: 'postgres',
+            host: configService.getOrThrow<string>('POSTGRES_HOST'),
+            port: configService.getOrThrow<number>('POSTGRES_PORT'),
+            database: configService.getOrThrow<string>('POSTGRES_DB'),
+            username: configService.getOrThrow<string>('POSTGRES_USER'),
+            password: configService.getOrThrow<string>('POSTGRES_PASSWORD'),
+            schema,
+            autoLoadEntities: true,
+            synchronize: false,
+            logging: true,
+          }),
           inject: [ConfigService],
         }),
       ],
-      exports: [MongooseModule],
+      exports: [TypeOrmModule],
     };
   }
 
-  static forFeature(models: ModelDefinition[]): DynamicModule {
-    return MongooseModule.forFeature(models);
+  static forFeature(entities: EntityClassOrSchema[]): DynamicModule {
+    return {
+      module: DatabaseModule,
+      imports: [TypeOrmModule.forFeature(entities)],
+      exports: [TypeOrmModule],
+    };
   }
 }

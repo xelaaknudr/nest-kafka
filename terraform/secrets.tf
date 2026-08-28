@@ -14,13 +14,11 @@ locals {
   # Список всех секретов которые нужны микросервисам.
   # Ключи в GSM совпадают с тем что указано в k8s/l3v5h/templates/*/secret.yaml
   app_secrets = [
-    "l3v5h-auth-mongodb-uri",
+    "l3v5h-postgres-password",
     "l3v5h-jwt-secret",
     "l3v5h-google-oauth-client-id",
     "l3v5h-google-oauth-client-secret",
     "l3v5h-google-oauth-refresh-token",
-    "l3v5h-reservations-mongodb-uri",
-    "l3v5h-payments-mongodb-uri",
     "l3v5h-stripe-secret-key",
     "l3v5h-smtp-user",
   ]
