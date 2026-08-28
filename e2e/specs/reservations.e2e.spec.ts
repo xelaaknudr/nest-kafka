@@ -43,6 +43,6 @@ describe('Reservations', () => {
 
     expect(resp.status).toBe(201);
     const reservation = await resp.json();
-    expect(reservation).toHaveProperty('_id');
+    expect(reservation).toHaveProperty('id');
   });
 });
