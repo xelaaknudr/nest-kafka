@@ -105,14 +105,32 @@ jobs:
           kubectl rollout status deployment/payments --timeout=3m
 
       - name: 🗄️ Run Database Migrations
-        # STEP 7.5: Execute migrations directly inside the running pods.
-        # This uses zero extra cluster resources since it runs inside existing containers.
+        # STEP 7.5: Execute migrations from the CI runner using port-forwarding.
+        # Production images are bundled by Webpack and don't contain ts-node or raw .ts migration files.
+        # So we run the TypeORM CLI here on the runner and tunnel into the cluster.
         run: |
+          npm i -g pnpm@9
+          pnpm install --frozen-lockfile
+          
+          # Fetch the real Postgres password from the cluster secret
+          export POSTGRES_PASSWORD=$(kubectl get secret postgres-secret -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 --decode)
+          export POSTGRES_USER=postgres
+          export POSTGRES_DB=nestdb
+          export POSTGRES_HOST=127.0.0.1
+          export POSTGRES_PORT=5432
+          
+          # Start port-forwarding to the Postgres service
+          kubectl port-forward svc/l3v5h-postgresql 5432:5432 &
+          PF_PID=$!
+          sleep 5 # Wait for tunnel
+          
           echo "Running Auth migrations..."
-          kubectl exec deployment/auth -- pnpm run migration:run:auth
-
+          pnpm run migration:run:auth
+          
           echo "Running Reservation migrations..."
-          kubectl exec deployment/reservations -- pnpm run migration:run:reservation
+          pnpm run migration:run:reservation
+          
+          kill $PF_PID
 
       - name: 🏷️ Tag deployed commit in Git
         # STEP 8: Tag the deployed commit in Git history.
