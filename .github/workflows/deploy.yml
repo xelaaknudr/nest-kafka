@@ -72,54 +72,25 @@ jobs:
       - name: 🚀 Helm upgrade — deploy all services
         # STEP 6: Actual production deployment (helm upgrade).
         run: |
-          # WHY DO WE NEED --set *.image.tag FLAGS?
-          # In the previous CI pipeline ("Build & Push Images"), Docker images were built 
-          # and pushed with a unique tag - the commit hash (head_sha).
-          # Here, we force Helm to ignore default tags in values.yaml and use these freshly built images.
-          
-          # WHY DO WE NEED SECURITY FLAGS (--atomic, --timeout, --cleanup-on-fail)?
-          # --atomic: Guarantees "all-or-nothing" deployment. If the app crashes on startup 
-          #           (e.g., Node.js throws an error), Helm will AUTOMATICALLY roll back 
-          #           to the previous working version. Zero downtime for users.
-          # --timeout 5m: Gives the cluster exactly 5 minutes for new pods to reach the 'Ready' state. 
-          #               If they fail to do so, the deployment fails and triggers a rollback.
-          # --cleanup-on-fail: Deletes any leftover "garbage" (stuck pods) if the deployment fails.
-          
           helm upgrade --install l3v5h ./k8s/l3v5h \
             --set reservations.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set auth.image.tag=${{ github.event.workflow_run.head_sha }} \
             --set notifications.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --set payments.image.tag=${{ github.event.workflow_run.head_sha }} \
-            --atomic \
-            --timeout 5m \
-            --cleanup-on-fail
-
-      - name: ✅ Verify rollout — all services
-        # STEP 7: Wait for readiness (Rollout).
-        # This blocks the pipeline and monitors pod startup in real-time.
-        # It provides extra assurance that Kubernetes successfully switched traffic to the new containers.
-        run: |
-          kubectl rollout status deployment/reservations --timeout=3m
-          kubectl rollout status deployment/auth --timeout=3m
-          kubectl rollout status deployment/notifications --timeout=3m
-          kubectl rollout status deployment/payments --timeout=3m
+            --set payments.image.tag=${{ github.event.workflow_run.head_sha }}
 
       - name: 🗄️ Run Database Migrations
-        # STEP 7.5: Execute migrations from the CI runner using port-forwarding.
-        # Production images are bundled by Webpack and don't contain ts-node or raw .ts migration files.
-        # So we run the TypeORM CLI here on the runner and tunnel into the cluster.
+        # STEP 7: Execute migrations from the CI runner using port-forwarding.
+        # This MUST run before rollout verification because pods won't become 'Ready' until tables exist.
         run: |
           npm i -g pnpm@9
           pnpm install --frozen-lockfile
           
-          # Fetch the real Postgres password from the cluster secret
           export POSTGRES_PASSWORD=$(kubectl get secret postgres-secret -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 --decode)
           export POSTGRES_USER=postgres
           export POSTGRES_DB=nestdb
           export POSTGRES_HOST=127.0.0.1
           export POSTGRES_PORT=5432
           
-          # Start port-forwarding to the Postgres service
           kubectl port-forward svc/l3v5h-postgresql 5432:5432 &
           PF_PID=$!
           sleep 5 # Wait for tunnel
@@ -131,6 +102,15 @@ jobs:
           pnpm run migration:run:reservation
           
           kill $PF_PID
+
+      - name: ✅ Verify rollout — all services
+        # STEP 8: Wait for readiness (Rollout).
+        # Now that migrations are done, the crash-looping pods will recover and become Ready.
+        run: |
+          kubectl rollout status deployment/reservations --timeout=5m
+          kubectl rollout status deployment/auth --timeout=5m
+          kubectl rollout status deployment/notifications --timeout=5m
+          kubectl rollout status deployment/payments --timeout=5m
 
       - name: 🏷️ Tag deployed commit in Git
         # STEP 8: Tag the deployed commit in Git history.
