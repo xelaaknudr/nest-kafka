@@ -53,9 +53,13 @@ jobs:
         with:
           version: v3.16.0
 
+      - name: 📦 Helm dependency build
+        # Fetch external dependencies (e.g., Bitnami PostgreSQL)
+        run: helm dependency build ./k8s/l3v5h
+
       - name: 🔍 Helm dry-run (validate before deploy)
         # STEP 5: Validation (Dry Run).
-        # The  flag renders all templates without applying them to the cluster.
+        # The flag renders all templates without applying them to the cluster.
         # It prevents syntax errors from breaking production by failing the pipeline early.
         run: |
           helm upgrade --install l3v5h ./k8s/l3v5h \
