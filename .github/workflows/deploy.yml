@@ -84,23 +84,26 @@ jobs:
         run: |
           npm i -g pnpm@9
           pnpm install --frozen-lockfile
-          
+
           export POSTGRES_PASSWORD=$(kubectl get secret postgres-secret -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 --decode)
           export POSTGRES_USER=postgres
           export POSTGRES_DB=nestdb
           export POSTGRES_HOST=127.0.0.1
           export POSTGRES_PORT=5432
-          
+
+          echo "Waiting for postgres pod to be Running..."
+          kubectl wait pod -l app.kubernetes.io/name=postgresql --for=condition=Ready --timeout=5m
+
           kubectl port-forward svc/l3v5h-postgresql 5432:5432 &
           PF_PID=$!
-          sleep 5 # Wait for tunnel
-          
+          sleep 5
+
           echo "Running Auth migrations..."
           pnpm run migration:run:auth
-          
+
           echo "Running Reservation migrations..."
           pnpm run migration:run:reservation
-          
+
           kill $PF_PID
 
       - name: ✅ Verify rollout — all services
