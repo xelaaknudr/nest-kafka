@@ -4,7 +4,6 @@ import {
   Inject,
   Injectable,
   Logger,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { Reflector } from '@nestjs/core';
@@ -29,27 +28,17 @@ export class JwtAuthGuard implements CanActivate {
       return false;
     }
 
-    const roles = this.reflector.get<string[]>('roles', context.getHandler());
-
     return this.authClient
       .send('authenticate', {
         Authentication: jwt,
       })
       .pipe(
         tap((res) => {
-          if (roles) {
-            for (const role of roles) {
-              if (!res.roles?.includes(role)) {
-                this.logger.error('the user do not have valid roles');
-                throw new UnauthorizedException();
-              }
-            }
-          }
           context.switchToHttp().getRequest().user = res;
         }),
         map(() => true),
         catchError((err) => {
-          this.logger.error(err);
+          this.logger.error('Authentication failed via RPC', err);
           return of(false);
         }),
       );

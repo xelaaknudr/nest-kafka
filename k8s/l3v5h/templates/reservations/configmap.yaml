@@ -20,4 +20,7 @@ data:
 
   PAYMENTS_HOST: payments
 
-  PAYMENTS_PORT: "3003"
+  PAYMENTS_PORT: "3003"  POSTGRES_HOST: "l3v5h-postgresql"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "nestdb"

@@ -1,30 +1,30 @@
 global:
   useExternalSecrets: false
+  postgres:
+    password: "YOUR_LOCAL_DB_PASSWORD"
 
 auth:
   image:
     repository: us-east4-docker.pkg.dev/l3v5h-506810/auth/production
     tag: latest
-  mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/auth?appName=roze"
   jwtSecret: "YOUR_JWT_SECRET"
 
 reservations:
   image:
     repository: us-east4-docker.pkg.dev/l3v5h-506810/reservations/production
     tag: latest
-  mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/reservations?appName=roze"
   jwtSecret: "YOUR_JWT_SECRET"
 
 payments:
   image:
     repository: us-east4-docker.pkg.dev/l3v5h-506810/payments/production
     tag: latest
-  mongodbUri: "mongodb+srv://root:PASSWORD@roze.1ivcru9.mongodb.net/payments?appName=roze"
   stripeSecretKey: "sk_test_xxxxxxxxx"
   googleOAuthClientId: "YOUR_CLIENT_ID"
   googleOAuthClientSecret: "YOUR_CLIENT_SECRET"
   googleOAuthRefreshToken: "YOUR_REFRESH_TOKEN"
   smtpUser: "YOUR_SMTP_USER"
+
 
 notifications:
   image:
