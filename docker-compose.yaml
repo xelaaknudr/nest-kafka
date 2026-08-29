@@ -18,6 +18,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   auth:
     image: auth:latest
@@ -38,6 +40,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   payments:
     image: payments:latest
@@ -51,6 +55,11 @@ services:
       - ./apps/payments/.env
     volumes:
       - .:/usr/src/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   notifications:
     image: notifications:latest
@@ -64,6 +73,11 @@ services:
       - .:/usr/src/app
     env_file:
       - ./apps/notifications/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   postgres:
     image: postgres:16-alpine
@@ -81,19 +95,11 @@ services:
       retries: 5
       start_period: 10s
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: pgadmin
-    env_file:
-      - .env
+  rabbitmq:
+    image: rabbitmq
+    container_name: rabbitmq
     ports:
-      - '5050:80'
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - pgadmin-data:/var/lib/pgadmin
+      - 5672:5672
 
 volumes:
   postgres-data:
-  pgadmin-data:

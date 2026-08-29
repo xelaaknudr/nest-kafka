@@ -21,6 +21,8 @@ locals {
     "l3v5h-google-oauth-refresh-token",
     "l3v5h-stripe-secret-key",
     "l3v5h-smtp-user",
+    "l3v5h-rabbitmq-password",
+    "l3v5h-rabbitmq-uri",
   ]
 }
 

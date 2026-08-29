@@ -11,14 +11,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: Joi.object({
-        TCP_PORT: Joi.number().required(),
-        // ШАГ 6: Чтение переменной внутри кода (NestJS).
-        // Как только под запустился, операционная система внутри него уже имеет переменную STRIPE_SECRET_KEY (благодаря envFrom в deployment.yaml).
-        // NestJS через ConfigModule автоматически считывает process.env.STRIPE_SECRET_KEY.
-        // Здесь (через библиотеку Joi) мы строго валидируем, что секрет действительно был передан и он является строкой.
         STRIPE_SECRET_KEY: Joi.string().required(),
         NOTIFICATIONS_HOST: Joi.string().required(),
         NOTIFICATIONS_PORT: Joi.number().required(),
+        RABBITMQ_URI: Joi.string().required(),
       }),
     }),
     LoggerModule,
@@ -26,10 +22,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
       {
         name: NOTIFICATIONS_SERVICE,
         useFactory: (configService: ConfigService) => ({
-          transport: Transport.TCP,
+          transport: Transport.RMQ,
           options: {
-            host: configService.get('NOTIFICATIONS_HOST'),
-            port: configService.get('NOTIFICATIONS_PORT'),
+            urls: [configService.getOrThrow<string>('RABBITMQ_URI')],
+            queue: 'notifications',
           },
         }),
         inject: [ConfigService],
