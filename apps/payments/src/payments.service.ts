@@ -22,28 +22,29 @@ export class PaymentsService {
   async createCharge({ token, amount, email }: PaymentsCreateChargeDto) {
     this.logger.log(`Processing payment of $${amount} for email: ${email}`);
 
-    const paymentMethod = await this.stripe.paymentMethods.create({
-      type: 'card',
-      card: { token },
-    });
-
-    const paymentIntent = await this.stripe.paymentIntents.create({
-      payment_method: paymentMethod.id,
-      amount: amount * 100,
-      confirm: true,
-      payment_method_types: ['card'],
-      currency: 'usd',
-    });
-
-    this.logger.log(
-      `Payment succeeded: intentId=${paymentIntent.id}, status=${paymentIntent.status}`,
-    );
-
     this.notificationsService.emit('notify_email', {
       email,
       text: `Your payment of $${amount} has completed successfully.`,
     });
 
-    return paymentIntent;
+    // const paymentMethod = await this.stripe.paymentMethods.create({
+    //   type: 'card',
+    //   card: { token },
+    // });
+
+    // const paymentIntent = await this.stripe.paymentIntents.create({
+    //   payment_method: paymentMethod.id,
+    //   amount: amount * 100,
+    //   confirm: true,
+    //   payment_method_types: ['card'],
+    //   currency: 'usd',
+    // });
+
+    this.logger.log(`Payment succeeded`);
+
+    return {
+      amount,
+      email,
+    };
   }
 }

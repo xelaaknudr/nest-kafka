@@ -5,7 +5,7 @@ import { ReservationRepository } from './reservation.repository';
 import { PAYMENTS_SERVICE, UserEntity } from '@app/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { ReservationEntity } from './models/reservation.entity';
-import { catchError, of, switchMap } from 'rxjs';
+import { map } from 'rxjs';
 
 @Injectable()
 export class ReservationService {
@@ -30,17 +30,7 @@ export class ReservationService {
         email,
       })
       .pipe(
-        catchError((err) => {
-          this.logger.error(
-            'Payment charge failed, proceeding with fallback reservation',
-            err?.stack || err,
-          );
-          return of({ id: 'mock_invoice_id' });
-        }),
-        switchMap((res) => {
-          this.logger.log(
-            `Payment charge processed (invoiceId: ${res.id}), saving reservation for user ${userId}`,
-          );
+        map((res) => {
           return this.reservationRepository.create(
             new ReservationEntity({
               ...createReservationDto,
