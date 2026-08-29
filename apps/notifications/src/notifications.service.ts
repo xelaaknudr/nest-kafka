@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { NotifyEmailDto } from '../dto/notify-email.dto';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(private readonly configService: ConfigService) {}
 
   private readonly transporter = nodemailer.createTransport({
@@ -12,28 +14,25 @@ export class NotificationsService {
     auth: {
       type: 'OAuth2',
       user: this.configService.get('SMTP_USER'),
-      clientId:
-        '604826058756-mqc5ep70as0mg8mc7rnlfkavqki9s6ug.apps.googleusercontent.com',
+      clientId: this.configService.get('GOOGLE_OAUTH_CLIENT_ID'),
       clientSecret: this.configService.get('GOOGLE_OAUTH_CLIENT_SECRET'),
       refreshToken: this.configService.get('GOOGLE_OAUTH_REFRESH_TOKEN'),
     },
   });
 
   async notifyEmail({ email, text }: NotifyEmailDto) {
-    console.log({
-      type: 'OAuth2',
-      user: this.configService.get('SMTP_USER'),
-      clientId:
-        '604826058756-mqc5ep70as0mg8mc7rnlfkavqki9s6ug.apps.googleusercontent.com',
-      clientSecret: this.configService.get('GOOGLE_OAUTH_CLIENT_SECRET'),
-      refreshToken: this.configService.get('GOOGLE_OAUTH_REFRESH_TOKEN'),
-    });
+    this.logger.log(`Sending email notification to: ${email}`);
 
-    await this.transporter.sendMail({
-      from: this.configService.get('SMTP_USER'),
-      to: email,
-      subject: 'Sleepr Notification',
-      text,
-    });
+    try {
+      await this.transporter.sendMail({
+        from: this.configService.get('SMTP_USER'),
+        to: email,
+        subject: 'Sleepr Notification',
+        text,
+      });
+      this.logger.log(`Email successfully sent to: ${email}`);
+    } catch (error) {
+      this.logger.error(`Failed to send email to ${email}`, error);
+    }
   }
 }

@@ -20,6 +20,10 @@ export class ReservationService {
     createReservationDto: CreateReservationDto,
     { email, id: userId }: UserEntity,
   ) {
+    this.logger.log(
+      `Initiating reservation creation for user ${userId} (${email})`,
+    );
+
     return this.paymentsService
       .send('create_charge', {
         ...createReservationDto.charge,
@@ -34,7 +38,9 @@ export class ReservationService {
           return of({ id: 'mock_invoice_id' });
         }),
         switchMap((res) => {
-          this.logger.log('Payment charge successful, creating reservation');
+          this.logger.log(
+            `Payment charge processed (invoiceId: ${res.id}), saving reservation for user ${userId}`,
+          );
           return this.reservationRepository.create(
             new ReservationEntity({
               ...createReservationDto,
@@ -48,14 +54,17 @@ export class ReservationService {
   }
 
   async findAll() {
+    this.logger.log('Retrieving all reservations');
     return this.reservationRepository.find({});
   }
 
   async findOne(id: number) {
+    this.logger.log(`Retrieving reservation with id: ${id}`);
     return this.reservationRepository.findOneOrThrow({ id });
   }
 
   async update(id: number, updateReservationDto: UpdateReservationDto) {
+    this.logger.log(`Updating reservation with id: ${id}`);
     return this.reservationRepository.findOneAndUpdate(
       { id },
       updateReservationDto,
@@ -63,6 +72,7 @@ export class ReservationService {
   }
 
   async remove(id: number) {
+    this.logger.log(`Removing reservation with id: ${id}`);
     return this.reservationRepository.findOneAndDelete({ id });
   }
 }
