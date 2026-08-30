@@ -41,6 +41,10 @@ postgresql:
       size: 1Gi
 # Настройки для RabbitMQ
 rabbitmq:
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/rabbitmq
+    tag: 3.13.4-debian-12-r0
   auth:
     username: rabbitmq
     password: rabbitmq
