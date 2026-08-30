@@ -1,8 +1,13 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import { NOTIFICATIONS_SERVICE } from '@app/common';
-import { ClientProxy } from '@nestjs/microservices';
+import {
+  RMQ_EXCHANGES,
+  RMQ_ROUTING_KEYS,
+  RMQ_QUEUES,
+  RabbitRPC,
+} from '@app/common';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { PaymentsCreateChargeDto } from '../dto/payments-create-charge.dto';
 
 @Injectable()
@@ -15,17 +20,27 @@ export class PaymentsService {
 
   constructor(
     private readonly configService: ConfigService,
-    @Inject(NOTIFICATIONS_SERVICE)
-    private readonly notificationsService: ClientProxy,
+    private readonly amqpConnection: AmqpConnection,
   ) {}
 
-  async createCharge({ token, amount, email }: PaymentsCreateChargeDto) {
+  @RabbitRPC({
+    exchange: RMQ_EXCHANGES.DEFAULT,
+    routingKey: RMQ_ROUTING_KEYS.PAYMENTS.CREATE_CHARGE,
+    queue: RMQ_QUEUES.PAYMENTS,
+    queueOptions: { deadLetterExchange: RMQ_EXCHANGES.DLX },
+  })
+  @UsePipes(new ValidationPipe())
+  async createCharge({ amount, email }: PaymentsCreateChargeDto) {
     this.logger.log(`Processing payment of $${amount} for email: ${email}`);
 
-    this.notificationsService.emit('notify_email', {
-      email,
-      text: `Your payment of $${amount} has completed successfully.`,
-    });
+    this.amqpConnection.publish(
+      RMQ_EXCHANGES.DEFAULT,
+      RMQ_ROUTING_KEYS.NOTIFICATIONS.NOTIFY_EMAIL,
+      {
+        email,
+        text: `Your payment of $${amount} has completed successfully.`,
+      },
+    );
 
     // const paymentMethod = await this.stripe.paymentMethods.create({
     //   type: 'card',
@@ -45,6 +60,7 @@ export class PaymentsService {
     return {
       amount,
       email,
+      id: 'mocked-id-123',
     };
   }
 }

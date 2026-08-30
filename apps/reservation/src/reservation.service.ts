@@ -1,11 +1,10 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { UpdateReservationDto } from './dto/update-reservation.dto';
 import { ReservationRepository } from './reservation.repository';
-import { PAYMENTS_SERVICE, UserEntity } from '@app/common';
-import { ClientProxy } from '@nestjs/microservices';
+import { UserEntity, RMQ_EXCHANGES, RMQ_ROUTING_KEYS } from '@app/common';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { ReservationEntity } from './models/reservation.entity';
-import { map } from 'rxjs';
 
 @Injectable()
 export class ReservationService {
@@ -13,7 +12,7 @@ export class ReservationService {
 
   constructor(
     private readonly reservationRepository: ReservationRepository,
-    @Inject(PAYMENTS_SERVICE) private readonly paymentsService: ClientProxy,
+    private readonly amqpConnection: AmqpConnection,
   ) {}
 
   async create(
@@ -24,23 +23,23 @@ export class ReservationService {
       `Initiating reservation creation for user ${userId} (${email})`,
     );
 
-    return this.paymentsService
-      .send('create_charge', {
+    const res = await this.amqpConnection.request<any>({
+      exchange: RMQ_EXCHANGES.DEFAULT,
+      routingKey: RMQ_ROUTING_KEYS.PAYMENTS.CREATE_CHARGE,
+      payload: {
         ...createReservationDto.charge,
         email,
-      })
-      .pipe(
-        map((res) => {
-          return this.reservationRepository.create(
-            new ReservationEntity({
-              ...createReservationDto,
-              invoiceId: res.id,
-              timestamp: new Date(),
-              userId,
-            }),
-          );
-        }),
-      );
+      },
+    });
+
+    return this.reservationRepository.create(
+      new ReservationEntity({
+        ...createReservationDto,
+        invoiceId: res.id || 'stub-id',
+        timestamp: new Date(),
+        userId,
+      }),
+    );
   }
 
   async findAll() {

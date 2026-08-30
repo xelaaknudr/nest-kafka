@@ -11,8 +11,7 @@ import { RMQ_EXCHANGES } from './rmq.constants';
       inject: [ConfigService],
       useFactory: (configService: ConfigService): RabbitMQConfig => {
         const uri =
-          configService.get<string>('RABBITMQ_URI') ||
-          'amqp://rabbitmq:rabbitmq@localhost:5672';
+          configService.get<string>('RABBITMQ_URI') || 'amqp://rabbitmq:5672';
 
         return {
           uri,
@@ -36,3 +35,4 @@ import { RMQ_EXCHANGES } from './rmq.constants';
   exports: [RabbitMQModule],
 })
 export class CommonRabbitMqModule {}
+export { RabbitRPC, RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';

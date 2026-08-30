@@ -5,8 +5,19 @@ export const RMQ_EXCHANGES = {
 
 export const RMQ_QUEUES = {
   DLX: 'dlx-queue',
+  AUTH: 'auth',
+  PAYMENTS: 'payments',
+  NOTIFICATIONS: 'notifications',
 } as const;
 
 export const RMQ_ROUTING_KEYS = {
-  // Empty for now, we will add keys here as we build features
+  AUTH: {
+    AUTHENTICATE: 'authenticate',
+  },
+  PAYMENTS: {
+    CREATE_CHARGE: 'create_charge',
+  },
+  NOTIFICATIONS: {
+    NOTIFY_EMAIL: 'notify_email',
+  },
 } as const;
