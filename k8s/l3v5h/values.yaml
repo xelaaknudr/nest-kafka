@@ -45,3 +45,5 @@ rabbitmq:
     username: rabbitmq
     password: rabbitmq
   replicaCount: 1
+  rbac:
+    create: false
