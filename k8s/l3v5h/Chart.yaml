@@ -26,3 +26,7 @@ dependencies:
   - name: postgresql
     version: "15.5.38"
     repository: "https://charts.bitnami.com/bitnami"
+
+  - name: rabbitmq
+    version: "14.6.1"
+    repository: "https://charts.bitnami.com/bitnami"

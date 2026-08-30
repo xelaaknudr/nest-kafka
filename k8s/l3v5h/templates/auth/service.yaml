@@ -1,17 +1,15 @@
 apiVersion: v1
 kind: Service
-
 metadata:
   name: auth
   labels:
     app: auth
-
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: auth
   ports:
-    - name: tcp
+    - name: http
       protocol: TCP
-      port: 3002
-      targetPort: 3002
+      port: 3001
+      targetPort: 3001

@@ -10,11 +10,8 @@ data:
 
   HTTP_PORT: "3001"
 
-  TCP_PORT: "3002"
+  
 
-  REDIS_HOST: redis
-
-  REDIS_PORT: "6379"
 
   JWT_EXPIRATION: "3600"
 
@@ -23,3 +20,4 @@ data:
   POSTGRES_USER: "postgres"
   POSTGRES_DB: "nestdb"
   POSTGRES_HOST: "l3v5h-postgresql"
+  RABBITMQ_URI: "amqp://rabbitmq:rabbitmq@l3v5h-rabbitmq:5672"
