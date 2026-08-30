@@ -1,11 +1,10 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { UpdateReservationDto } from './dto/update-reservation.dto';
 import { ReservationRepository } from './reservation.repository';
-import { PAYMENTS_SERVICE, UserEntity } from '@app/common';
-import { ClientProxy } from '@nestjs/microservices';
+import { UserEntity, RMQ_EXCHANGES, RMQ_ROUTING_KEYS } from '@app/common';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { ReservationEntity } from './models/reservation.entity';
-import { catchError, of, switchMap } from 'rxjs';
 
 @Injectable()
 export class ReservationService {
@@ -13,49 +12,48 @@ export class ReservationService {
 
   constructor(
     private readonly reservationRepository: ReservationRepository,
-    @Inject(PAYMENTS_SERVICE) private readonly paymentsService: ClientProxy,
+    private readonly amqpConnection: AmqpConnection,
   ) {}
 
   async create(
     createReservationDto: CreateReservationDto,
     { email, id: userId }: UserEntity,
   ) {
-    return this.paymentsService
-      .send('create_charge', {
+    this.logger.log(
+      `Initiating reservation creation for user ${userId} (${email})`,
+    );
+
+    const res = await this.amqpConnection.request<any>({
+      exchange: RMQ_EXCHANGES.DEFAULT,
+      routingKey: RMQ_ROUTING_KEYS.PAYMENTS.CREATE_CHARGE,
+      payload: {
         ...createReservationDto.charge,
         email,
-      })
-      .pipe(
-        catchError((err) => {
-          this.logger.error(
-            'Payment charge failed, proceeding with fallback reservation',
-            err?.stack || err,
-          );
-          return of({ id: 'mock_invoice_id' });
-        }),
-        switchMap((res) => {
-          this.logger.log('Payment charge successful, creating reservation');
-          return this.reservationRepository.create(
-            new ReservationEntity({
-              ...createReservationDto,
-              invoiceId: res.id,
-              timestamp: new Date(),
-              userId,
-            }),
-          );
-        }),
-      );
+      },
+    });
+
+    return this.reservationRepository.create(
+      new ReservationEntity({
+        ...createReservationDto,
+        invoiceId: res.id || 'stub-id',
+        timestamp: new Date(),
+        userId,
+      }),
+    );
   }
 
   async findAll() {
+    this.logger.log('Retrieving all reservations');
     return this.reservationRepository.find({});
   }
 
   async findOne(id: number) {
+    this.logger.log(`Retrieving reservation with id: ${id}`);
     return this.reservationRepository.findOneOrThrow({ id });
   }
 
   async update(id: number, updateReservationDto: UpdateReservationDto) {
+    this.logger.log(`Updating reservation with id: ${id}`);
     return this.reservationRepository.findOneAndUpdate(
       { id },
       updateReservationDto,
@@ -63,6 +61,7 @@ export class ReservationService {
   }
 
   async remove(id: number) {
+    this.logger.log(`Removing reservation with id: ${id}`);
     return this.reservationRepository.findOneAndDelete({ id });
   }
 }

@@ -1,46 +1,45 @@
 import {
   CanActivate,
   ExecutionContext,
-  Inject,
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { ClientProxy } from '@nestjs/microservices';
 import { Reflector } from '@nestjs/core';
-import { catchError, map, Observable, of, tap } from 'rxjs';
-import { AUTH_SERVICE } from '../constants';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
+import { RMQ_EXCHANGES, RMQ_ROUTING_KEYS } from '../rabbitmq/rmq.constants';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   private readonly logger = new Logger(JwtAuthGuard.name);
 
   constructor(
-    @Inject(AUTH_SERVICE) private readonly authClient: ClientProxy,
+    private readonly amqpConnection: AmqpConnection,
     private readonly reflector: Reflector,
   ) {}
 
-  canActivate(
-    context: ExecutionContext,
-  ): boolean | Promise<boolean> | Observable<boolean> {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const jwt = context.switchToHttp().getRequest().cookies?.Authentication;
 
     if (!jwt) {
       return false;
     }
 
-    return this.authClient
-      .send('authenticate', {
-        Authentication: jwt,
-      })
-      .pipe(
-        tap((res) => {
-          context.switchToHttp().getRequest().user = res;
-        }),
-        map(() => true),
-        catchError((err) => {
-          this.logger.error('Authentication failed via RPC', err);
-          return of(false);
-        }),
+    try {
+      const res = await this.amqpConnection.request<any>({
+        exchange: RMQ_EXCHANGES.DEFAULT,
+        routingKey: RMQ_ROUTING_KEYS.AUTH.AUTHENTICATE,
+        payload: { Authentication: jwt },
+        timeout: 5000,
+      });
+
+      context.switchToHttp().getRequest().user = res;
+      return true;
+    } catch (err: any) {
+      this.logger.error(
+        'Authentication failed via RPC',
+        err.stack || err.message,
       );
+      return false;
+    }
   }
 }
