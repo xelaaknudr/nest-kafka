@@ -17,6 +17,6 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: auth
+                name: auth-http
                 port:
                   number: 3001
