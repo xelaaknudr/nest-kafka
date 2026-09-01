@@ -1,15 +1,8 @@
-import { Injectable, UseGuards } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { UserEntity } from '@app/common';
 import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import {
-  RabbitRPC,
-  RMQ_EXCHANGES,
-  RMQ_ROUTING_KEYS,
-  RMQ_QUEUES,
-} from '@app/common';
 
 @Injectable()
 export class AuthService {
@@ -33,16 +26,5 @@ export class AuthService {
       expires,
     });
     return token;
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @RabbitRPC({
-    exchange: RMQ_EXCHANGES.DEFAULT,
-    routingKey: RMQ_ROUTING_KEYS.AUTH.AUTHENTICATE,
-    queue: RMQ_QUEUES.AUTH,
-    queueOptions: { deadLetterExchange: RMQ_EXCHANGES.DLX },
-  })
-  async authenticate(data: any) {
-    return data.user;
   }
 }

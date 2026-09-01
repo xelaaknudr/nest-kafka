@@ -4,6 +4,7 @@ import * as Joi from 'joi';
 import { LoggerModule, CommonRabbitMqModule } from '@app/common';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
+import { NotificationsConsumer } from './notifications.consumer';
 
 @Module({
   imports: [
@@ -22,6 +23,6 @@ import { NotificationsService } from './notifications.service';
     CommonRabbitMqModule,
   ],
   controllers: [NotificationsController],
-  providers: [NotificationsService],
+  providers: [NotificationsService, NotificationsConsumer],
 })
 export class NotificationsModule {}

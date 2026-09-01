@@ -1,10 +1,4 @@
-import { Injectable, Logger, UsePipes, ValidationPipe } from '@nestjs/common';
-import {
-  RabbitSubscribe,
-  RMQ_EXCHANGES,
-  RMQ_ROUTING_KEYS,
-  RMQ_QUEUES,
-} from '@app/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { NotifyEmailDto } from '../dto/notify-email.dto';
@@ -26,13 +20,6 @@ export class NotificationsService {
     },
   });
 
-  @RabbitSubscribe({
-    exchange: RMQ_EXCHANGES.DEFAULT,
-    routingKey: RMQ_ROUTING_KEYS.NOTIFICATIONS.NOTIFY_EMAIL,
-    queue: RMQ_QUEUES.NOTIFICATIONS,
-    queueOptions: { deadLetterExchange: RMQ_EXCHANGES.DLX },
-  })
-  @UsePipes(new ValidationPipe())
   async notifyEmail({ email, text }: NotifyEmailDto) {
     this.logger.log(`Sending email notification to: ${email}`);
 

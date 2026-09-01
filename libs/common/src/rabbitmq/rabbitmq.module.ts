@@ -2,6 +2,7 @@ import { Module, Global } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RabbitMQModule, RabbitMQConfig } from '@golevelup/nestjs-rabbitmq';
 import { RmqLogger } from './rmq-logger.service';
+import { RabbitRetryService } from './rabbitmq-retry.service';
 import { RMQ_EXCHANGES } from './rmq.constants';
 
 @Global()
@@ -27,12 +28,29 @@ import { RMQ_EXCHANGES } from './rmq.constants';
               name: RMQ_EXCHANGES.DEFAULT,
               type: 'topic',
             },
+            {
+              name: RMQ_EXCHANGES.DIRECT_TEST,
+              type: 'direct',
+            },
+            {
+              name: RMQ_EXCHANGES.FANOUT_TEST,
+              type: 'fanout',
+            },
+            {
+              name: RMQ_EXCHANGES.TOPIC_TEST,
+              type: 'topic',
+            },
           ],
         };
       },
     }),
   ],
-  exports: [RabbitMQModule],
+  providers: [RabbitRetryService],
+  exports: [RabbitMQModule, RabbitRetryService],
 })
 export class CommonRabbitMqModule {}
-export { RabbitRPC, RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+export {
+  RabbitRPC,
+  RabbitSubscribe,
+  AmqpConnection,
+} from '@golevelup/nestjs-rabbitmq';

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { PaymentsConsumer } from './payments.consumer';
 import { ConfigModule } from '@nestjs/config';
 import * as Joi from 'joi';
 import { LoggerModule, CommonRabbitMqModule } from '@app/common';
@@ -21,6 +22,6 @@ import { LoggerModule, CommonRabbitMqModule } from '@app/common';
     CommonRabbitMqModule,
   ],
   controllers: [PaymentsController],
-  providers: [PaymentsService],
+  providers: [PaymentsService, PaymentsConsumer],
 })
 export class PaymentsModule {}

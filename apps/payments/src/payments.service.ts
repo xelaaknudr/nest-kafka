@@ -1,12 +1,7 @@
-import { Injectable, Logger, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import {
-  RMQ_EXCHANGES,
-  RMQ_ROUTING_KEYS,
-  RMQ_QUEUES,
-  RabbitRPC,
-} from '@app/common';
+import { RMQ_EXCHANGES, RMQ_ROUTING_KEYS } from '@app/common';
 import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { PaymentsCreateChargeDto } from '../dto/payments-create-charge.dto';
 
@@ -23,13 +18,6 @@ export class PaymentsService {
     private readonly amqpConnection: AmqpConnection,
   ) {}
 
-  @RabbitRPC({
-    exchange: RMQ_EXCHANGES.DEFAULT,
-    routingKey: RMQ_ROUTING_KEYS.PAYMENTS.CREATE_CHARGE,
-    queue: RMQ_QUEUES.PAYMENTS,
-    queueOptions: { deadLetterExchange: RMQ_EXCHANGES.DLX },
-  })
-  @UsePipes(new ValidationPipe())
   async createCharge({ amount, email }: PaymentsCreateChargeDto) {
     this.logger.log(`Processing payment of $${amount} for email: ${email}`);
 
@@ -41,19 +29,6 @@ export class PaymentsService {
         text: `Your payment of $${amount} has completed successfully.`,
       },
     );
-
-    // const paymentMethod = await this.stripe.paymentMethods.create({
-    //   type: 'card',
-    //   card: { token },
-    // });
-
-    // const paymentIntent = await this.stripe.paymentIntents.create({
-    //   payment_method: paymentMethod.id,
-    //   amount: amount * 100,
-    //   confirm: true,
-    //   payment_method_types: ['card'],
-    //   currency: 'usd',
-    // });
 
     this.logger.log(`Payment succeeded`);
 
