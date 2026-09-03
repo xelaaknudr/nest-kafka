@@ -53,6 +53,8 @@ services:
     command: pnpm run start:dev payments
     env_file:
       - ./apps/payments/.env
+    environment:
+      - POSTGRES_HOST=postgres
     volumes:
       - .:/usr/src/app
     depends_on:

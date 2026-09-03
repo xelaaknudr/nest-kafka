@@ -21,7 +21,17 @@ export class PaymentsConsumer {
   ) {}
 
   /**
-   * Бизнес-обработчик: Создание платежа через RPC
+   * 🎓 СЛОЙ 4: ИДЕМПОТЕНТНЫЙ КОНСЬЮМЕР (PAYMENTS CONSUMER)
+   *
+   * ❓ ЗАЧЕМ ЭТОТ МЕТОД:
+   * Принимает сообщения из очереди `payments` (отправленные через Outbox или RPC).
+   *
+   * 🛡️ МЕХАНИЗМ ЗАЩИТЫ EXACTLY-ONCE:
+   * 1. Извлекает сквозной `x-idempotency-key` из AMQP-заголовков сообщения.
+   * 2. Передает ключ в `PaymentsService`.
+   * 3. В таблице `payments.payment_entity` создан UNIQUE INDEX по колонке `idempotencyKey`.
+   * 4. Если Outbox Relay из-за сетевого сбоя пришлет дубликат — база выбросит ошибку 23505,
+   *    повторное списание денег заблокируется, а консьюмер мирно подтвердит (ACK) обработку.
    */
   @RabbitRPC({
     exchange: RMQ_EXCHANGES.DEFAULT,
@@ -29,12 +39,19 @@ export class PaymentsConsumer {
     queue: RMQ_QUEUES.PAYMENTS,
     queueOptions: { deadLetterExchange: RMQ_EXCHANGES.DLX },
   })
-  @UsePipes(new ValidationPipe())
-  async createCharge(data: PaymentsCreateChargeDto) {
+  async createCharge(data: any, amqpMsg: any) {
+    const idempotencyKey =
+      amqpMsg?.properties?.headers?.['x-idempotency-key'] ||
+      data.idempotencyKey;
+
     this.logger.log(
-      `[PaymentsConsumer] Обработка платежа через RPC для: ${data.email}`,
+      `[PaymentsConsumer] Обработка платежа для: ${data.email} (Сумма: $${data.amount}, IdempotencyKey: ${idempotencyKey || 'none'})`,
     );
-    return this.paymentsService.createCharge(data);
+    return this.paymentsService.createCharge(
+      data,
+      idempotencyKey,
+      data.orderId,
+    );
   }
 
   /**
@@ -66,7 +83,6 @@ export class PaymentsConsumer {
       });
     }
   }
-
 
   // =========================================================================
   // ХРАНИЛИЩЕ КЛЮЧЕЙ ИДЕМПОТЕНТНОСТИ (В продакшене это Redis с TTL)
@@ -156,7 +172,8 @@ export class PaymentsConsumer {
   })
   async handleExactlyOnce(data: any, amqpMsg: any) {
     const key =
-      amqpMsg?.properties?.headers?.['x-idempotency-key'] || data.idempotencyKey;
+      amqpMsg?.properties?.headers?.['x-idempotency-key'] ||
+      data.idempotencyKey;
 
     this.logger.log(
       `📨 [9.3 EXACTLY-ONCE] Прилетел дубликат #${data.duplicateAttempt} для ключа: ${key}`,
@@ -181,6 +198,74 @@ export class PaymentsConsumer {
   }
 
   /**
+   * КЕЙС 1 (ДЕМОНСТРАЦИЯ БАГА): Обработка БЕЗ Идемпотентности (Duplicate Risk)
+   *
+   * 🎓 ВОПРОС НА СОБЕСЕДОВАНИИ: "Что происходит в базе данных при дублировании сообщений в At-Least-Once?"
+   *
+   * ОТВЕТ:
+   * 1. Если консьюмер просто делает INSERT в базу без проверки уникальности, то каждый повтор сообщения
+   *    создает НОВУЮ запись в таблице.
+   * 2. Это приводит к тяжелым бизнес-багам: двойное списание денег у клиента, двойное бронирование номера в отеле.
+   */
+  @RabbitSubscribe({
+    exchange: RMQ_EXCHANGES.DIRECT_TEST,
+    routingKey: RMQ_ROUTING_KEYS.LEARNING.GUARANTEES.DUPLICATE_RISK,
+    queue: 'guarantee-duplicate-risk-queue',
+    queueOptions: { durable: true },
+  })
+  async handleDuplicateRisk(data: any) {
+    this.logger.warn(
+      `💥 [КЕЙС 1: DUPLICATE RISK] Прилетел дубликат заказа #${data.duplicateAttempt} для: ${data.orderId}`,
+    );
+    await this.paymentsService.processPaymentWithoutIdempotency({
+      orderId: data.orderId,
+      amount: data.amount,
+      email: data.email || 'customer@example.com',
+    });
+  }
+
+  /**
+   * КЕЙС 2 (ЗАЩИТА POSTGRES): Обработка С Идемпотентностью через PostgreSQL (Exactly-Once)
+   *
+   * 🎓 ВОПРОС НА СОБЕСЕДОВАНИИ: "Как база данных помогает достичь Exactly-Once при At-Least-Once доставке?"
+   *
+   * ОТВЕТ:
+   * 1. В таблице создается UNIQUE INDEX по колонке `idempotencyKey` (или ID транзакции).
+   * 2. Первая попытка успешно делает INSERT и списывает средства.
+   * 3. Все последующие дубликаты натыкаются на Postgres Unique Constraint (ошибка 23505).
+   * 4. Сервис перехватывает ошибку, логирует предотвращенный дубль и подтверждает сообщение (ACK).
+   * 5. В базе данных остается РОВНО 1 строка!
+   */
+  @RabbitSubscribe({
+    exchange: RMQ_EXCHANGES.DIRECT_TEST,
+    routingKey: RMQ_ROUTING_KEYS.LEARNING.GUARANTEES.IDEMPOTENT_DB,
+    queue: 'guarantee-idempotent-db-queue',
+    queueOptions: { durable: true },
+  })
+  async handleIdempotentDb(data: any, amqpMsg: any) {
+    const idempotencyKey =
+      amqpMsg?.properties?.headers?.['x-idempotency-key'] ||
+      data.idempotencyKey;
+
+    this.logger.log(
+      `🛡️ [КЕЙС 2: EXACTLY-ONCE DB] Прилетел дубликат #${data.duplicateAttempt} с ключом: ${idempotencyKey}`,
+    );
+
+    const result = await this.paymentsService.processPaymentWithIdempotency({
+      idempotencyKey,
+      orderId: data.orderId,
+      amount: data.amount,
+      email: data.email || 'customer@example.com',
+    });
+
+    if (result.duplicate) {
+      this.logger.warn(
+        `🛡️ [IDEMPOTENCY VERIFIED] Дубль по ключу "${idempotencyKey}" успешно нейтрализован базой данных. В базе осталась ровно 1 запись!`,
+      );
+    }
+  }
+
+  /**
    * Тест: Fanout Exchange (Вещание)
    */
   @RabbitSubscribe({
@@ -191,6 +276,55 @@ export class PaymentsConsumer {
   async handleFanoutTest(data: any) {
     this.logger.log(
       `📢 [FANOUT EXCHANGE] Получено сообщение в payments.consumer: ${JSON.stringify(data)}`,
+    );
+  }
+
+  /**
+   * 🎓 ТЕСТ 10: QUORUM QUEUE (КВОРУМНАЯ ОЧЕРЕДЬ НА БАЗЕ RAFT)
+   * Очередь защищена репликацией консенсуса Raft.
+   */
+  @RabbitSubscribe({
+    exchange: RMQ_EXCHANGES.DEFAULT,
+    routingKey: 'payments.quorum.key',
+    queue: 'payments.quorum',
+    queueOptions: {
+      arguments: {
+        'x-queue-type': 'quorum',
+        'x-delivery-limit': 5,
+      },
+    },
+  })
+  async handleQuorumTest(data: any) {
+    this.logger.log(
+      `🛡️ [QUORUM QUEUE (RAFT)] Успешно принято сообщение: ${JSON.stringify(data)} (С защитой от сбоя серверов!)`,
+    );
+  }
+
+  /**
+   * 🎓 ТЕСТ 11: SHARD 1 (ШАРД №1 ОБМЕННИКА CONSISTENT HASH)
+   */
+  @RabbitSubscribe({
+    exchange: 'sharded-orders-exchange',
+    routingKey: '1', // Вес 1
+    queue: 'orders-shard-1',
+  })
+  async handleShard1(data: any) {
+    this.logger.log(
+      `⚡ [SHARD 1] Получен заказ для userId=${data.userId} (OrderId: ${data.orderId})`,
+    );
+  }
+
+  /**
+   * 🎓 ТЕСТ 11: SHARD 2 (ШАРД №2 ОБМЕННИКА CONSISTENT HASH)
+   */
+  @RabbitSubscribe({
+    exchange: 'sharded-orders-exchange',
+    routingKey: '1', // Вес 1
+    queue: 'orders-shard-2',
+  })
+  async handleShard2(data: any) {
+    this.logger.log(
+      `⚡ [SHARD 2] Получен заказ для userId=${data.userId} (OrderId: ${data.orderId})`,
     );
   }
 }

@@ -40,6 +40,8 @@ export const RMQ_ROUTING_KEYS = {
       AT_MOST_ONCE: 'learning.guarantee.at-most-once',
       AT_LEAST_ONCE: 'learning.guarantee.at-least-once',
       EXACTLY_ONCE: 'learning.guarantee.exactly-once',
+      DUPLICATE_RISK: 'learning.guarantee.duplicate-risk',
+      IDEMPOTENT_DB: 'learning.guarantee.idempotent-db',
     },
   },
 } as const;

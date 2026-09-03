@@ -40,6 +40,10 @@ import { RMQ_EXCHANGES } from './rmq.constants';
               name: RMQ_EXCHANGES.TOPIC_TEST,
               type: 'topic',
             },
+            {
+              name: 'sharded-orders-exchange',
+              type: 'x-consistent-hash',
+            },
           ],
         };
       },

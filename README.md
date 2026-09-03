@@ -22,14 +22,27 @@
   <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
   [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
 
-## Description
+## 🚀 Архитектура и База знаний по Message Brokers
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+Этот проект является боевым эталоном распределенной микросервисной архитектуры на **NestJS**, **RabbitMQ** и **PostgreSQL**, реализующим передовые Enterprise-паттерны надежности:
 
-## Project setup
+*   🛡️ **[Полное руководство по RabbitMQ (RABBITMQ.md)](./RABBITMQ.md)** — исчерпывающий учебник по AMQP, RPC, Dead Letter Queues, Idempotency, Transactional Outbox и масштабированию кластеров.
+*   📦 **Transactional Outbox (Hexagonal)** — 100% гарантия доставки событий без потери данных через `FOR UPDATE SKIP LOCKED`.
+*   🔁 **Idempotent Consumers** — защита от дублирования платежей на уровне базы данных.
+*   ⚡ **Масштабирование RabbitMQ** — разбор Quorum Queues, Consistent Hash Sharding, Streams и Backpressure.
+
+---
+
+## 🛠️ Project Setup
 
 ```bash
+# Установка зависимостей
 $ pnpm install
+
+# Применение миграций БД
+$ pnpm run migration:run:auth
+$ pnpm run migration:run:reservation
+$ pnpm run migration:run:payments
 ```
 
 ## Compile and run the project

@@ -5,10 +5,11 @@ import {
   DatabaseModule,
   HealthModule,
   CommonRabbitMqModule,
+  OutboxModule,
+  LoggerModule,
 } from '@app/common';
 import { ReservationRepository } from './reservation.repository';
 import { ReservationEntity } from './models/reservation.entity';
-import { LoggerModule } from '@app/common';
 import * as Joi from 'joi';
 import { ConfigModule } from '@nestjs/config';
 
@@ -30,6 +31,7 @@ import { ConfigModule } from '@nestjs/config';
     HealthModule,
     DatabaseModule.forRoot({ schema: 'reservations' }),
     DatabaseModule.forFeature([ReservationEntity]),
+    OutboxModule.forRoot({ schema: 'reservations' }),
     LoggerModule,
     CommonRabbitMqModule,
   ],

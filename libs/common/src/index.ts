@@ -8,3 +8,4 @@ export * from './kafka';
 export * from './models';
 export * from './health';
 export * from './rabbitmq';
+export * from './outbox';
