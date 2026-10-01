@@ -30,6 +30,7 @@
  * │ 18  │ POST /redis/learn/18-session        │ Session: управление сессиями        │
  * │ 19  │ GET  /redis/learn/19-leaderboard    │ Leaderboard: топ-10 игроков         │
  * │ 20  │ GET  /redis/learn/20-memory-info    │ INFO: статистика и метрики          │
+ * │ 21  │ GET  /redis/learn/21-single-flight  │ Single-Flight: схлопывание запросов │
  * └─────┴─────────────────────────────────────┴─────────────────────────────────────┘
  *
  * 🚀 БЫСТРЫЙ СТАРТ:
@@ -49,6 +50,8 @@ import { REDIS_CLIENT } from '@app/common';
 @Controller('redis/learn')
 export class RedisLearnController {
   private readonly logger = new Logger(RedisLearnController.name);
+  // Пул запросов "в полёте" для паттерна Single-Flight (In-Memory Promise Deduplication)
+  private readonly inFlightRequests = new Map<string, Promise<any>>();
 
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
@@ -749,6 +752,10 @@ export class RedisLearnController {
       'WITHSCORES',
     );
 
+    console.log("------>>>>>>>>>>>>")
+
+    console.log(ascendingAll);
+
     // ZREVRANGE — от большего к меньшему (реальный рейтинг: 1-е место = наибольший score)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const top3 = await (this.redis as any).zrevrange(
@@ -1057,39 +1064,167 @@ export class RedisLearnController {
       `[STEP-8] Cache-Aside: miss=${missDuration}ms, hit=${hitDuration}ms, speedup=${Math.round(missDuration / Math.max(hitDuration, 1))}x`,
     );
 
+    // ─── СТРАТЕГИЯ 1: Jitter (Случайный разброс TTL) ─────────────────────
+    // Проблема: Если в полночь положить 100 000 товаров с TTL=3600с, ровно через час
+    // все 100 000 ключей исчезнут ОДНОВРЕМЕННО, и БД ляжет под шквалом запросов (Thundering Herd).
+    // Решение: Базовый TTL + случайный разброс (jitter).
+    const baseTtl = 60;
+    const jitter = Math.floor(Math.random() * 15); // разброс 0..14 секунд
+    const ttlWithJitter = baseTtl + jitter;
+    const jitterKey = 'redis:learn:cache:jitter:item';
+    await this.redis.set(jitterKey, JSON.stringify({ item: 'sample' }), 'EX', ttlWithJitter);
+    const actualJitterTtl = await this.redis.ttl(jitterKey);
+    await this.redis.del(jitterKey);
+
+    // ─── СТРАТЕГИЯ 2: Mutex Lock (Защита от Cache Stampede) ──────────────
+    // Проблема: 3 параллельных запроса пришли за одним товаром при холодном кэше.
+    // Решение: Первый запрос берет замок (SET NX EX) и идет в БД.
+    // Остальные 2 запроса видят, что замок занят, ждут 70мс и читают готовый кэш!
+    const stampedeKey = 'redis:learn:cache:stampede:product';
+    const stampedeLockKey = 'redis:learn:cache:stampede:lock';
+    await this.redis.del(stampedeKey, stampedeLockKey);
+
+    let dbQueriesCount = 0;
+    const loadFromDbWithCounter = async () => {
+      dbQueriesCount++;
+      await new Promise((r) => setTimeout(r, 60)); // БД отвечает 60мс
+      return { id: 123, name: 'Expensive Aggregation Data', timestamp: new Date().toISOString() };
+    };
+
+    const fetchWithMutex = async (requestId: string) => {
+      // 1. Проверяем кэш
+      const cached = await this.redis.get(stampedeKey);
+      if (cached) {
+        return { requestId, source: 'CACHE_HIT ✅', data: JSON.parse(cached) };
+      }
+
+      // 2. Cache miss -> пытаемся захватить замок на загрузку (на 5 секунд)
+      const lockAcquired = await this.redis.set(stampedeLockKey, requestId, 'EX', 5, 'NX');
+
+      if (lockAcquired === 'OK') {
+        // Мы ЛИДЕР: только этот запрос идет в базу данных!
+        try {
+          const dbData = await loadFromDbWithCounter();
+          await this.redis.set(stampedeKey, JSON.stringify(dbData), 'EX', 60);
+          return { requestId, source: 'DATABASE_LOAD (лидер взял замок и сходил в БД)', data: dbData };
+        } finally {
+          // Освобождаем замок
+          await this.redis.del(stampedeLockKey);
+        }
+      } else {
+        // Мы ПОСЛЕДОВАТЕЛЬ: замок уже занят лидером! Ждем пока он положит данные в кэш
+        await new Promise((r) => setTimeout(r, 80));
+        const retryCached = await this.redis.get(stampedeKey);
+        return {
+          requestId,
+          source: 'CACHE_HIT_AFTER_WAIT (дождался лидера и взял из кэша)',
+          data: retryCached ? JSON.parse(retryCached) : null,
+        };
+      }
+    };
+
+    // Запускаем 3 запроса строго одновременно!
+    const stampedeResults = await Promise.all([
+      fetchWithMutex('request-#1'),
+      fetchWithMutex('request-#2'),
+      fetchWithMutex('request-#3'),
+    ]);
+    await this.redis.del(stampedeKey, stampedeLockKey);
+
+    // ─── СТРАТЕГИЯ 3: Stale-While-Revalidate (SWR) ───────────────────────
+    // Проблема: Пользователь не должен ждать 50-200мс пока идет запрос в БД.
+    // Решение: Храним логический срок expiresAt в самом объекте, а физический TTL ставим с запасом.
+    // Если логический срок истек — СРАЗУ отдаем клиенту старые данные (<1мс),
+    // а обновление в БД запускаем в фоне!
+    const swrKey = 'redis:learn:cache:swr:product';
+    const now = Date.now();
+
+    // Записываем данные с истекшим логическим сроком (5 секунд назад)
+    const stalePayload = {
+      data: { id: 123, name: 'Product with SWR', version: 1 },
+      logicalExpiresAt: now - 5000,
+    };
+    await this.redis.set(swrKey, JSON.stringify(stalePayload), 'EX', 120);
+
+    const swrRaw = await this.redis.get(swrKey);
+    const parsedSwr = JSON.parse(swrRaw!);
+
+    let swrClientResult: Record<string, unknown>;
+    let backgroundRefreshTriggered = false;
+
+    if (Date.now() > parsedSwr.logicalExpiresAt) {
+      // Кэш логически устарел, но мы СРАЗУ отдаем старые данные (клиент доволен)
+      swrClientResult = parsedSwr.data;
+      backgroundRefreshTriggered = true;
+
+      // Фоновое обновление кэша (в фоне обновляем на версию 2)
+      const freshData = {
+        data: { id: 123, name: 'Product with SWR', version: 2 },
+        logicalExpiresAt: Date.now() + 60000,
+      };
+      await this.redis.set(swrKey, JSON.stringify(freshData), 'EX', 120);
+    } else {
+      swrClientResult = parsedSwr.data;
+    }
+    await this.redis.del(swrKey);
+
     return {
       step: 8,
       concept:
-        'Cache-Aside (Lazy Loading) — самый распространённый паттерн кэширования',
+        'Cache-Aside (Lazy Loading) + 3 Стратегии защиты от Cache Stampede',
       commands: [
         'GET (check cache)',
         'SET ... EX (write to cache)',
+        'SET ... NX EX (mutex lock for stampede protection)',
         'DEL (invalidate)',
       ],
       results: {
-        firstRequest: {
-          source: firstRequestSource,
-          durationMs: missDuration,
-          product,
+        basicCacheAside: {
+          firstRequest: {
+            source: firstRequestSource,
+            durationMs: missDuration,
+            product,
+          },
+          secondRequest: {
+            source: secondRequestSource,
+            durationMs: hitDuration,
+            speedupVsDb: `~${Math.round(50 / Math.max(hitDuration, 1))}x быстрее`,
+            remainingTtl: `${remainingTtl}s`,
+          },
+          cacheInvalidation: {
+            deleted: deleteResult === 1,
+            afterDelete:
+              afterInvalidation === null
+                ? 'null (кэш очищен)'
+                : afterInvalidation,
+          },
         },
-        secondRequest: {
-          source: secondRequestSource,
-          durationMs: hitDuration,
-          speedupVsDb: `~${Math.round(50 / Math.max(hitDuration, 1))}x быстрее`,
-          remainingTtl: `${remainingTtl}s`,
+        antiStampedeStrategies: {
+          strategy1_Jitter: {
+            name: 'Jitter (Случайный разброс TTL)',
+            problem: '100k ключей кэшируются одновременно → одновременно истекают → БД падает',
+            solution: 'Базовый TTL + Math.random() * delta',
+            baseTtl: `${baseTtl}s`,
+            randomJitterAdded: `+${jitter}s`,
+            finalTtlInRedis: `${actualJitterTtl}s`,
+          },
+          strategy2_MutexLock: {
+            name: 'Mutex Lock (Защита от Cache Stampede при одновременных запросах)',
+            problem: '3 одновременных запроса при пустом кэше все идут в БД',
+            solution: 'Лидер захватывает SET NX EX, остальные ждут и читают из кэша',
+            totalDbQueriesExecuted: dbQueriesCount, // Ровно 1 поход в БД вместо 3!
+            proof: `В базу ушел ровно ${dbQueriesCount} запрос вместо 3!`,
+            concurrentRequests: stampedeResults,
+          },
+          strategy3_StaleWhileRevalidate: {
+            name: 'Stale-While-Revalidate (SWR)',
+            problem: 'Пользователь не должен ждать 50-200мс ответа БД при истечении кэша',
+            solution: 'Мгновенно отдаем чуть устаревший кэш (<1мс), а базу обновляем в фоне',
+            clientReceivedData: swrClientResult,
+            clientLatency: '< 1ms (мгновенно!)',
+            backgroundRefreshTriggered,
+          },
         },
-        cacheInvalidation: {
-          deleted: deleteResult === 1,
-          afterDelete:
-            afterInvalidation === null
-              ? 'null (кэш очищен)'
-              : afterInvalidation,
-        },
-      },
-      patterns: {
-        cacheAside: 'check → miss → load → cache',
-        writeThrough: 'write DB + write cache atomically',
-        writeBehind: 'write cache → async flush to DB',
       },
     };
   }
@@ -1357,156 +1492,85 @@ export class RedisLearnController {
    */
   @Post('11-lua-script')
   async step11LuaScript() {
-    const counterKey = 'redis:learn:lua:rate-counter';
     const casKey = 'redis:learn:lua:cas';
-    const transferKey1 = 'redis:learn:lua:wallet:alice';
-    const transferKey2 = 'redis:learn:lua:wallet:bob';
 
-    // ─── Lua Script 1: Атомарный счётчик с лимитом ───────────────────────
-    // Атомарный Rate Counter: INCREMENT и проверить лимит за один шаг
-    const rateLimitScript = `
-      local key = KEYS[1]
-      local limit = tonumber(ARGV[1])
-      local window = tonumber(ARGV[2])
-
-      local current = redis.call('INCR', key)
-
-      if current == 1 then
-        redis.call('EXPIRE', key, window)
-      end
-
-      if current > limit then
-        return {current, 0}  -- 0 = denied
-      end
-
-      return {current, 1}  -- 1 = allowed
-    `;
-
-    // Вызываем скрипт 5 раз — первые 3 разрешены, потом блокировка
-    const rateResults: Array<{
-      attempt: number;
-      count: number;
-      allowed: boolean;
-    }> = [];
-    for (let i = 1; i <= 5; i++) {
-      const result = (await this.redis.eval(
-        rateLimitScript,
-        1,
-        counterKey,
-        '3',
-        '60',
-      )) as number[];
-      rateResults.push({
-        attempt: i,
-        count: result[0],
-        allowed: result[1] === 1,
-      });
-    }
-
-    // ─── Lua Script 2: Compare-And-Swap (CAS) ────────────────────────────
-    // Атомарно: прочитать → сравнить → записать (если значение совпадает)
+    /**
+     * 💡 ПОЧЕМУ ЗДЕСЬ МИНИМУМ LUA:
+     * На бэкенд-собеседованиях (NestJS / Node.js) от вас НЕ ждут знания языка Lua!
+     * Интервьюеру важно только концептуальное понимание:
+     * 1. ЗАЧЕМ нужен Lua в Redis?
+     *    Обычные MULTI/EXEC не умеют ветвления (if/else). Нельзя сделать: "прочитай баланс, и если он > 100 — спиши".
+     *    В Lua это делается на сервере за ОДИН сетевой запрос.
+     * 2. КАК он выполняется?
+     *    Атомарно! Пока работает скрипт, Redis не обрабатывает другие команды (однопоточность).
+     * 3. КАК ЭТО ПИШУТ В РЕАЛЬНОСТИ?
+     *    В реальных NestJS проектах мы почти никогда не пишем Lua руками — мы подключаем готовые библиотеки
+     *    (например, `@nestjs/throttler`, `ioredis-lock`, `redlock`), которые уже содержат проверенные скрипты.
+     *
+     * Ниже — единственный и самый классический пример: Compare-And-Swap (CAS).
+     * Логика всего в 3 строчки: "Если в ключе лежит ожидаемое значение — перезапиши его".
+     */
     const casScript = `
-      local key = KEYS[1]
-      local expected = ARGV[1]
-      local newVal = ARGV[2]
-
-      local current = redis.call('GET', key)
-
-      if current == false then
-        return redis.error_reply('Key does not exist')
+      if redis.call("GET", KEYS[1]) == ARGV[1] then
+        redis.call("SET", KEYS[1], ARGV[2])
+        return 1
+      else
+        return 0
       end
-
-      if current ~= expected then
-        return 0  -- CAS failed: значение изменилось
-      end
-
-      redis.call('SET', key, newVal)
-      return 1  -- CAS success
     `;
 
-    await this.redis.set(casKey, 'original-value');
+    // 1. Кладём начальное значение
+    await this.redis.set(casKey, 'version-1');
+
+    // 2. Успешный CAS: ожидаем 'version-1' -> перезаписываем на 'version-2'
     const casSuccess = await this.redis.eval(
       casScript,
       1,
       casKey,
-      'original-value',
-      'new-value',
+      'version-1',
+      'version-2',
     );
+
+    // 3. Неуспешный CAS: ожидаем всё ещё 'version-1', но там уже 'version-2' -> отказ!
     const casFail = await this.redis.eval(
       casScript,
       1,
       casKey,
-      'original-value',
-      'another-value',
+      'version-1',
+      'version-3',
     );
-    const finalCasValue = await this.redis.get(casKey);
 
-    // ─── Lua Script 3: Атомарный перевод между кошельками ────────────────
-    const transferScript = `
-      local src = KEYS[1]
-      local dst = KEYS[2]
-      local amount = tonumber(ARGV[1])
-
-      local srcBalance = tonumber(redis.call('GET', src))
-
-      if srcBalance == nil then
-        return redis.error_reply('Source wallet not found')
-      end
-
-      if srcBalance < amount then
-        return redis.error_reply('Insufficient funds: ' .. srcBalance .. ' < ' .. amount)
-      end
-
-      redis.call('DECRBY', src, amount)
-      redis.call('INCRBY', dst, amount)
-
-      local newSrc = redis.call('GET', src)
-      local newDst = redis.call('GET', dst)
-
-      return {tonumber(newSrc), tonumber(newDst)}
-    `;
-
-    await this.redis.set(transferKey1, '500');
-    await this.redis.set(transferKey2, '200');
-
-    const transferResult = (await this.redis.eval(
-      transferScript,
-      2,
-      transferKey1,
-      transferKey2,
-      '150',
-    )) as number[];
-
-    // Очистка
-    await this.redis.del(counterKey, casKey, transferKey1, transferKey2);
+    const finalValue = await this.redis.get(casKey);
+    await this.redis.del(casKey);
 
     this.logger.log(
-      `[STEP-11] Lua: rate=${rateResults.length} attempts, CAS=${casSuccess}, transfer=${transferResult}`,
+      `[STEP-11] Lua CAS: success=${casSuccess}, fail=${casFail}, finalValue=${finalValue}`,
     );
 
     return {
       step: 11,
-      concept: 'Lua Scripts — EVAL для атомарных составных операций',
-      commands: ['EVAL', 'EVALSHA', 'SCRIPT LOAD', 'SCRIPT EXISTS'],
-      results: {
-        rateLimitScript: {
-          description: 'Атомарный rate counter: лимит 3 запроса за 60 сек',
-          attempts: rateResults,
-        },
-        compareAndSwap: {
-          description: 'Атомарный CAS: прочитать → сравнить → записать',
-          casSuccess: casSuccess === 1,
-          casFail: casFail === 0,
-          finalValue: finalCasValue,
-        },
-        atomicTransfer: {
-          description: 'Перевод 150 от Alice к Bob (атомарно)',
-          aliceBalance: transferResult?.[0] ?? 'error',
-          bobBalance: transferResult?.[1] ?? 'error',
-        },
+      concept: 'Lua Scripts — Атомарный Compare-And-Swap (минимум синтаксиса)',
+      commands: ['EVAL script 1 key expectedValue newValue'],
+      whatToSayOnInterview: {
+        question: 'Зачем в Redis нужны Lua-скрипты, если есть MULTI/EXEC?',
+        answer:
+          'Транзакции MULTI/EXEC не позволяют использовать результат одной команды для принятия решения во второй (нет if/else). Lua-скрипт выполняется атомарно на стороне Redis и позволяет реализовать условную логику (например, CAS, списание баланса или rate limiter) без сетевых накладных расходов.',
+        productionReality:
+          'В коде на NestJS разработчики обычно используют готовые библиотеки (redlock, @nestjs/throttler), где Lua уже протестирован и спрятан под капот.',
       },
-      interviewTip:
-        'В Redis Cluster: все KEYS[] должны быть на одном шарде. Используй hash tags: {user}:key',
+      results: {
+        attempt1: {
+          expected: 'version-1',
+          newValue: 'version-2',
+          result: casSuccess === 1 ? 'Успешно обновлено (1) ✅' : 'Отказ',
+        },
+        attempt2: {
+          expected: 'version-1 (уже устарело!)',
+          newValue: 'version-3',
+          result: casFail === 0 ? 'Отклонено (0) ✅ (чужие изменения защищены)' : 'Успех',
+        },
+        finalValueInRedis: finalValue,
+      },
     };
   }
 
@@ -1549,18 +1613,17 @@ export class RedisLearnController {
     const ownerId = `worker-${Math.random().toString(36).substring(2, 9)}`;
     const LOCK_TTL = 10; // секунд
 
-    // Lua-скрипт для безопасного освобождения замка
-    // Атомарно: GET → проверить owner → DEL
-    const unlockScript = `
-      if redis.call("GET", KEYS[1]) == ARGV[1] then
-        return redis.call("DEL", KEYS[1])
-      else
-        return 0
-      end
-    `;
+    // ─── Безопасное освобождение (инкапсулировано в чистую TS-функцию) ──
+    // Проверяем: "Замок наш? Если да — удаляем".
+    // В продакшене для этого всегда берут готовую библиотеку: redlock или ioredis-lock.
+    const safeUnlock = async (key: string, owner: string): Promise<number> => {
+      const script =
+        'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end';
+      return (await this.redis.eval(script, 1, key, owner)) as number;
+    };
 
-    // ─── Захват замка ─────────────────────────────────────────────────────
-    // SET key value NX EX seconds — атомарная команда
+    // ─── Захват замка (Нативный Redis!) ───────────────────────────────────
+    // SET key value NX EX seconds — 100% нативная команда Redis, никакого Lua!
     const acquired = await this.redis.set(
       lockKey,
       ownerId,
@@ -1576,7 +1639,6 @@ export class RedisLearnController {
 
     if (lockAcquired) {
       // ─── Критическая секция ───────────────────────────────────────────
-      // Только один воркер одновременно может здесь находиться
       this.logger.log(`[STEP-12] Lock acquired by ${ownerId}`);
 
       // Симуляция работы
@@ -1585,13 +1647,8 @@ export class RedisLearnController {
 
       ttlAtRelease = await this.redis.ttl(lockKey);
 
-      // ─── Безопасное освобождение через Lua-скрипт ────────────────────
-      const releaseNum = (await this.redis.eval(
-        unlockScript,
-        1,
-        lockKey,
-        ownerId,
-      )) as number;
+      // Освобождаем замок через наш TS-хелпер
+      const releaseNum = await safeUnlock(lockKey, ownerId);
       releaseResult =
         releaseNum === 1
           ? 'Замок освобождён ✅'
@@ -1624,17 +1681,12 @@ export class RedisLearnController {
       'NX',
     );
 
-    // competitor2 пытается освободить замок competitor1 — ДОЛЖНО ПРОВАЛИТЬСЯ
-    const illegalRelease = (await this.redis.eval(
-      unlockScript,
-      1,
-      compLockKey,
-      competitor2,
-    )) as number;
+    // competitor2 пытается освободить чужой замок competitor1 — ДОЛЖНО ПРОВАЛИТЬСЯ
+    const illegalRelease = await safeUnlock(compLockKey, competitor2);
     const actualOwner = await this.redis.get(compLockKey);
 
-    // Легитимное освобождение
-    await this.redis.eval(unlockScript, 1, compLockKey, competitor1);
+    // Легитимное освобождение владельцем
+    await safeUnlock(compLockKey, competitor1);
 
     this.logger.log(
       `[STEP-12] Lock: acquired=${lockAcquired}, illegalRelease=${illegalRelease}`,
@@ -1718,103 +1770,69 @@ export class RedisLearnController {
     const LIMIT = 5; // запросов
     const WINDOW_SECONDS = 60; // секунд
 
-    // ─── Алгоритм 1: Fixed Window Counter ─────────────────────────────────
+    // ─── Алгоритм 1: Fixed Window Counter (Чистый TypeScript + Redis) ─────
+    // Самый простой счётчик: INCR + EXPIRE (без какого-либо Lua!)
     const fixedWindowKey = `redis:learn:rl:fixed:${userId}`;
-
-    const fixedLimitScript = `
-      local key = KEYS[1]
-      local limit = tonumber(ARGV[1])
-      local window = tonumber(ARGV[2])
-
-      local count = redis.call('INCR', key)
-
-      if count == 1 then
-        redis.call('EXPIRE', key, window)
-      end
-
-      local ttl = redis.call('TTL', key)
-
-      if count > limit then
-        return {count, 0, ttl}
-      end
-
-      return {count, 1, ttl}
-    `;
-
     const fixedResults: Array<{
       request: number;
       count: number;
       allowed: boolean;
       ttl: number;
     }> = [];
+
     for (let i = 1; i <= 7; i++) {
-      const r = (await this.redis.eval(
-        fixedLimitScript,
-        1,
-        fixedWindowKey,
-        String(LIMIT),
-        String(WINDOW_SECONDS),
-      )) as number[];
+      // 1. Увеличиваем счётчик
+      const count = await this.redis.incr(fixedWindowKey);
+
+      // 2. Если это первый запрос — вешаем время жизни окна (60 сек)
+      if (count === 1) {
+        await this.redis.expire(fixedWindowKey, WINDOW_SECONDS);
+      }
+
+      const ttl = await this.redis.ttl(fixedWindowKey);
+      const allowed = count <= LIMIT;
+
       fixedResults.push({
         request: i,
-        count: r[0],
-        allowed: r[1] === 1,
-        ttl: r[2],
+        count,
+        allowed,
+        ttl,
       });
     }
 
-    // ─── Алгоритм 2: Sliding Window Log via Sorted Set ────────────────────
+    // ─── Алгоритм 2: Sliding Window Log (Чистый TypeScript + Sorted Set) ───
+    // Точный скользящий лог на структуре Sorted Set (ZADD, ZREMRANGEBYSCORE, ZCARD)
     const slidingKey = `redis:learn:rl:sliding:${userId}`;
-
-    const slidingLimitScript = `
-      local key = KEYS[1]
-      local limit = tonumber(ARGV[1])
-      local window = tonumber(ARGV[2])
-      local now = tonumber(ARGV[3])
-      local reqId = ARGV[4]
-
-      -- Удалить запросы старше окна
-      local windowStart = now - (window * 1000)
-      redis.call('ZREMRANGEBYSCORE', key, '-inf', windowStart)
-
-      -- Количество запросов в текущем окне
-      local count = redis.call('ZCARD', key)
-
-      if count >= limit then
-        -- Узнать когда освободится слот
-        local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-        return {count, 0, -1}
-      end
-
-      -- Добавить текущий запрос
-      redis.call('ZADD', key, now, reqId)
-      redis.call('EXPIRE', key, window + 1)
-
-      return {count + 1, 1, limit - count - 1}
-    `;
-
     const slidingResults: Array<{
       request: number;
       count: number;
       allowed: boolean;
       remaining: number;
     }> = [];
+
     for (let i = 1; i <= 7; i++) {
       const now = Date.now();
-      const r = (await this.redis.eval(
-        slidingLimitScript,
-        1,
-        slidingKey,
-        String(LIMIT),
-        String(WINDOW_SECONDS),
-        String(now),
-        `req:${now}:${i}`,
-      )) as number[];
+      const windowStart = now - WINDOW_SECONDS * 1000;
+
+      // 1. Удаляем устаревшие запросы старше 60 секунд (score < windowStart)
+      await this.redis.zremrangebyscore(slidingKey, '-inf', windowStart);
+
+      // 2. Считаем сколько запросов осталось в текущем окне
+      const count = await this.redis.zcard(slidingKey);
+
+      let allowed = false;
+      if (count < LIMIT) {
+        // 3. Разрешено! Добавляем timestamp как score и уникальный ID запроса
+        await this.redis.zadd(slidingKey, now, `req:${now}:${i}`);
+        await this.redis.expire(slidingKey, WINDOW_SECONDS + 1);
+        allowed = true;
+      }
+
       slidingResults.push({
         request: i,
-        count: r[0],
-        allowed: r[1] === 1,
-        remaining: r[2],
+        count: allowed ? count + 1 : count,
+        allowed,
+        remaining: Math.max(0, LIMIT - (allowed ? count + 1 : count)),
       });
     }
 
@@ -2780,9 +2798,147 @@ export class RedisLearnController {
             '✅ Управление сессиями',
             '✅ Leaderboard',
             '✅ Мониторинг и метрики',
+            '✅ Single-Flight (Request Coalescing)',
           ],
         },
       },
     };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ШАГ 21: SINGLE-FLIGHT PATTERN — Схлопывание запросов (Request Coalescing)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 🎓 КОНЦЕПЦИЯ: Single-Flight Pattern (Request Coalescing / Promise Deduplication)
+   *
+   * 📌 В ЧЁМ СУТЬ:
+   * Самый элегантный способ борьбы с Cache Stampede без распределённых блокировок!
+   *
+   * Если одновременно прилетает 10 (или 100) параллельных запросов за одним и тем же ключом:
+   * Вместо того чтобы:
+   * ❌ Делать 100 тяжелых запросов в базу данных
+   * ❌ Вешать замок в Redis и делать непредсказуемый sleep(80ms)
+   *
+   * Мы используем силу асинхронности Node.js:
+   * 1. Запрос #1 видит, что данных в кэше нет. Он создает Promise загрузки из БД
+   *    и сохраняет сам объект Promise в локальную Map: `inFlightRequests.set(key, promise)`.
+   * 2. Запросы #2..#10 приходят через пару миллисекунд: они видят этот Promise в Map
+   *    и просто подписываются на него (`await inFlightRequests.get(key)`)!
+   * 3. База данных выполняет запрос РОВНО 1 РАЗ!
+   * 4. Когда Promise завершается:
+   *    - Результат записывается в Redis кэш.
+   *    - Promise удаляется из Map (полёт завершён).
+   *    - Все 10 клиентов одновременно получают готовые свежие данные!
+   *
+   * ⚠️ ЛОВУШКА ИНТЕРВЬЮ (Senior / Lead):
+   *   Q: "Чем Single-Flight лучше Distributed Mutex в Redis?"
+   *   A: 1. Ноль сетевого оверхеда — всё работает в оперативной памяти инстанса (In-Memory Map).
+   *      2. Нет проблемы угадывания времени через sleep() — Promise отдаёт результат ровно в момент его готовности (Event-driven).
+   *      3. Нет опасности зависших замков (Deadlock), если воркер упал.
+   *      4. В Go это стандартная библиотека `sync/singleflight`, а в Node.js — основа библиотеки DataLoader от Facebook.
+   *
+   * curl http://localhost:3000/redis/learn/21-single-flight
+   */
+  @Get('21-single-flight')
+  async step21SingleFlight() {
+    const productId = 'phone-pro-99';
+    const cacheKey = `redis:learn:sf:product:${productId}`;
+    await this.redis.del(cacheKey);
+
+    let dbExecutionCount = 0;
+
+    // Имитация медленного запроса к БД (длится 70 мс)
+    const queryDatabase = async (id: string) => {
+      dbExecutionCount++;
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      return {
+        id,
+        title: 'Flagship Smartphone Pro',
+        price: 1199,
+        fetchedAt: new Date().toISOString(),
+      };
+    };
+
+    // ─── Функция Single-Flight ───────────────────────────────────────────
+    const fetchWithSingleFlight = async (callerId: string) => {
+      // 1. Проверяем кэш в Redis
+      const cached = await this.redis.get(cacheKey);
+      if (cached) {
+        return { callerId, source: 'REDIS_CACHE_HIT ✅', data: JSON.parse(cached) };
+      }
+
+      // 2. Если запрос уже "в полёте" — НЕ идём в БД, а подписываемся на существующий Promise!
+      if (this.inFlightRequests.has(cacheKey)) {
+        const sharedData = await this.inFlightRequests.get(cacheKey)!;
+        return {
+          callerId,
+          source: 'SINGLE_FLIGHT_COALESCED (схлопнут, слушал общий Promise)',
+          data: sharedData,
+        };
+      }
+
+      // 3. Мы первый запрос (Leader): создаем Promise и сохраняем его в локальную Map
+      const flightPromise = (async () => {
+        try {
+          const dbData = await queryDatabase(productId);
+          // Сохраняем в Redis кэш
+          await this.redis.set(cacheKey, JSON.stringify(dbData), 'EX', 60);
+          return dbData;
+        } finally {
+          // Полёт завершён — удаляем Promise из памяти
+          this.inFlightRequests.delete(cacheKey);
+        }
+      })();
+
+      this.inFlightRequests.set(cacheKey, flightPromise);
+
+      const leaderData = await flightPromise;
+      return {
+        callerId,
+        source: 'DATABASE_LEADER (создал Promise и единственный сходил в БД)',
+        data: leaderData,
+      };
+    };
+
+    // Симулируем одновременный приход 5 клиентов строго параллельно!
+    const startTime = Date.now();
+    const concurrentResults = await Promise.all([
+      fetchWithSingleFlight('Client-#1'),
+      fetchWithSingleFlight('Client-#2'),
+      fetchWithSingleFlight('Client-#3'),
+      fetchWithFlightAlias('Client-#4', fetchWithSingleFlight),
+      fetchWithFlightAlias('Client-#5', fetchWithSingleFlight),
+    ]);
+    const durationMs = Date.now() - startTime;
+
+    await this.redis.del(cacheKey);
+
+    return {
+      step: 21,
+      concept:
+        'Single-Flight Pattern (Request Coalescing / Схлопывание параллельных запросов)',
+      summary: {
+        totalIncomingClients: 5,
+        totalDatabaseExecutions: dbExecutionCount, // РОVNО 1 ПОХОД В БАЗУ!
+        totalDurationMs: `${durationMs}ms`,
+        proof: `5 клиентов получили свежие данные из базы, но база выполнила ровно ${dbExecutionCount} запрос вместо 5!`,
+      },
+      requestsBreakdown: concurrentResults,
+      interviewCheatSheet: {
+        patternName: 'Single-Flight (Request Coalescing / Promise Deduplication)',
+        coreIdea:
+          'Храним Promise активного запроса в Map<key, Promise>. Все параллельные запросы слушают один и тот же Promise.',
+        vsDistributedLock:
+          'Не требует Redis-замка, не требует sleep(), не создает сетевых задержек. Идеально для Node.js и Go процессов.',
+      },
+    };
+  }
+}
+
+function fetchWithFlightAlias(
+  callerId: string,
+  fn: (id: string) => Promise<any>,
+) {
+  return fn(callerId);
 }

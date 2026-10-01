@@ -1792,19 +1792,60 @@ private async refreshUserCache(userId: string): Promise<User> {
 }
 ```
 
+### Решение 4: Single-Flight Pattern (Request Coalescing) ⭐ САМЫЙ ПОПУЛЯРНЫЙ
+
+Вместо сетевого Redis-замка с непредсказуемым `sleep()` — объединяем параллельные запросы прямо в оперативной памяти Node.js (или Go `sync/singleflight`):
+
+```typescript
+// Храним летящие в данный момент промисы в локальной Map
+private inFlight = new Map<string, Promise<any>>();
+
+async getDataWithSingleFlight(key: string) {
+  // 1. Проверяем кэш в Redis
+  const cached = await this.redis.get(key);
+  if (cached) return JSON.parse(cached);
+
+  // 2. Если запрос за этим ключом УЖЕ летит в БД — ждём существующий Promise!
+  if (this.inFlight.has(key)) {
+    return await this.inFlight.get(key);
+  }
+
+  // 3. Мы первый запрос (лидер): создаём Promise и сохраняем его в Map
+  const promise = (async () => {
+    try {
+      const data = await this.db.fetch(key);
+      await this.redis.set(key, JSON.stringify(data), 'EX', 60);
+      return data;
+    } finally {
+      // Полёт завершён — удаляем Promise из памяти
+      this.inFlight.delete(key);
+    }
+  })();
+
+  this.inFlight.set(key, promise);
+  return await promise;
+}
+```
+
+**Плюсы:**
+* 0 сетевых запросов на блокировку (всё в памяти одного процесса).
+* Никаких `sleep()` и угадываний времени ответа БД — клиенты получают ответ ровно в миллисекунду выполнения Promise.
+* Нет риска deadlock при падении воркера.
+
 ### curl пример
 
 ```bash
-curl -X GET http://localhost:3000/redis/learn/17-cache-stampede
+curl -X GET http://localhost:3000/redis/learn/21-single-flight
 ```
 
 ### ⚠️ ЛОВУШКИ ИНТЕРВЬЮ
 
 > 💡 **Вопрос**: "Как предотвратить cache stampede?"
-> **Ответ**: 3 основных подхода:
-> 1. **Mutex Lock** (SET NX) — только один запрос идёт в БД, остальные ждут или читают stale данные
-> 2. **Probabilistic Early Refresh (XFetch)** — обновляем кэш до истечения с вероятностью, растущей по мере приближения к TTL
-> 3. **Background Refresh** — фоновый процесс обновляет популярные ключи до истечения. Клиенты всегда читают из кэша.
+> **Ответ**: 4 основных подхода (Senior/Lead уровень):
+> 1. **Single-Flight (Request Coalescing)** — схлопываем параллельные запросы внутри инстанса в один Promise. Самый быстрый и безопасный способ без Redis-замков.
+> 2. **Mutex Lock** (SET NX) — только один запрос идёт в БД, но требует аккуратного ожидания без слепого `sleep` (через Pub/Sub).
+> 3. **Stale-While-Revalidate (SWR)** — отдаем старые данные мгновенно (<1мс), а БД опрашиваем в фоне.
+> 4. **Jitter (TTL randomization)** — профилактика: добавляем случайный разброс к TTL, чтобы 100 000 ключей не умерли в одну секунду.
 
 ---
 

@@ -10,6 +10,8 @@ import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
           options: {
             singleLine: true,
             colorize: true,
+            translateTime: 'SYS:standard',
+            ignore: 'pid,hostname',
           },
         },
       },
