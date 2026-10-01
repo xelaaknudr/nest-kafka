@@ -17,4 +17,8 @@ export class ReservationEntity extends AbstractEntity<ReservationEntity> {
 
   @Column({ nullable: true })
   invoiceId: string;
+
+  @Column({ default: 'PENDING' })
+  status: string;
 }
+

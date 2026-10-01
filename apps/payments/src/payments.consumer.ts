@@ -1,6 +1,5 @@
-import { Injectable, Logger, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
-import { PaymentsCreateChargeDto } from '../dto/payments-create-charge.dto';
 import {
   RabbitRPC,
   RabbitSubscribe,
@@ -8,17 +7,66 @@ import {
   RMQ_ROUTING_KEYS,
   RMQ_QUEUES,
   RabbitRetryService,
+  KafkaConsumerService,
+  KAFKA_TOPICS,
+  DELIVERY_MODES,
+  PaymentCreatedEvent,
+  MessageMeta,
 } from '@app/common';
-import { Nack } from '@golevelup/nestjs-rabbitmq';
+import { Nack, AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 
 @Injectable()
-export class PaymentsConsumer {
+export class PaymentsConsumer implements OnModuleInit {
   private readonly logger = new Logger(PaymentsConsumer.name);
 
   constructor(
     private readonly paymentsService: PaymentsService,
     private readonly retryService: RabbitRetryService,
+    private readonly kafkaConsumer: KafkaConsumerService,
+    private readonly amqpConnection: AmqpConnection,
   ) {}
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * KAFKA ПОДПИСКИ (ШАГИ 3, 5, 6, 8 ИЗ KAFKA.md)
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  onModuleInit() {
+    // 🛡️ [ШАГИ 3, 5, 6, 8] Слушаем создание платежей: AT_LEAST_ONCE + In-Process Retry + DLT
+    this.kafkaConsumer.subscribe(
+      KAFKA_TOPICS.PAYMENT_CREATED,
+      (payload: PaymentCreatedEvent, meta: MessageMeta) =>
+        this.paymentsService.processPaymentFromKafka(payload, meta),
+      {
+        deliveryMode: DELIVERY_MODES.AT_LEAST_ONCE,
+        retry: {
+          maxRetries: 3,
+          initialDelayMs: 1000,
+          backoff: 'exponential',
+          dltTopic: KAFKA_TOPICS.PAYMENT_DLT,
+        },
+      },
+    );
+
+    this.kafkaConsumer.subscribe(
+      KAFKA_TOPICS.RESERVATION_EVENTS,
+      (payload: any, meta: MessageMeta) =>
+        this.paymentsService.testFanOut(payload, meta),
+      {
+        deliveryMode: DELIVERY_MODES.AT_LEAST_ONCE,
+        retry: {
+          maxRetries: 3,
+          initialDelayMs: 1000,
+          backoff: 'exponential',
+          dltTopic: KAFKA_TOPICS.PAYMENT_DLT,
+        },
+      },
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RABBITMQ ПОДПИСКИ
+  // ═══════════════════════════════════════════════════════════════════════════
 
   /**
    * 🎓 СЛОЙ 4: ИДЕМПОТЕНТНЫЙ КОНСЬЮМЕР (PAYMENTS CONSUMER)
@@ -55,7 +103,92 @@ export class PaymentsConsumer {
   }
 
   /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * SAGA PATTERN: АСИНХРОННЫЙ ОБРАБОТЧИК КОМАНД ПЛАТЕЖЕЙ (EVENT-DRIVEN)
+   * ═══════════════════════════════════════════════════════════════════════════
+   * 1. Команда 'saga.command.payment.process' -> списать средства.
+   *    Публикует:
+   *    - 'saga.event.payment.success' при успехе
+   *    - 'saga.event.payment.failed' при сбое
+   * 2. Команда 'saga.command.payment.refund' -> КОМПЕНСИРУЮЩИЙ ОТКАТ (Refund).
+   *    Публикует:
+   *    - 'saga.event.payment.refunded'
+   */
+  @RabbitSubscribe({
+    exchange: RMQ_EXCHANGES.DEFAULT,
+    routingKey: [
+      RMQ_ROUTING_KEYS.SAGA.COMMAND_PAYMENT_PROCESS,
+      RMQ_ROUTING_KEYS.SAGA.COMMAND_PAYMENT_REFUND,
+    ],
+    queue: RMQ_QUEUES.SAGA_PAYMENTS_COMMANDS,
+  })
+  async handleSagaPaymentCommands(data: any, amqpMsg: any) {
+    const routingKey = amqpMsg?.fields?.routingKey;
+
+    if (routingKey === RMQ_ROUTING_KEYS.SAGA.COMMAND_PAYMENT_PROCESS) {
+      this.logger.log(
+        `💳 [SAGA PAYMENTS] Получена команда на списание для Saga "${data.sagaId}", бронь #${data.reservationId}, сумма: $${data.amount}`,
+      );
+
+      const result = await this.paymentsService.processSagaPayment(data);
+
+      if (result.success) {
+        await this.amqpConnection.publish(
+          RMQ_EXCHANGES.DEFAULT,
+          RMQ_ROUTING_KEYS.SAGA.EVENT_PAYMENT_SUCCESS,
+          {
+            sagaId: data.sagaId,
+            reservationId: data.reservationId,
+            paymentId: result.paymentId,
+            amount: data.amount,
+            email: data.email,
+            simulateNotifyFailure: data.simulateNotifyFailure,
+          },
+        );
+        this.logger.log(
+          `📤 [SAGA PAYMENTS] Опубликовано событие "saga.event.payment.success" (ID платежа: ${result.paymentId})`,
+        );
+      } else {
+        await this.amqpConnection.publish(
+          RMQ_EXCHANGES.DEFAULT,
+          RMQ_ROUTING_KEYS.SAGA.EVENT_PAYMENT_FAILED,
+          {
+            sagaId: data.sagaId,
+            reservationId: data.reservationId,
+            reason: result.reason,
+            email: data.email,
+          },
+        );
+        this.logger.warn(
+          `📤 [SAGA PAYMENTS] Опубликовано событие "saga.event.payment.failed" (Причина: ${result.reason})`,
+        );
+      }
+    } else if (routingKey === RMQ_ROUTING_KEYS.SAGA.COMMAND_PAYMENT_REFUND) {
+      this.logger.warn(
+        `↩️ [SAGA PAYMENTS] Получена команда компенсации REFUND для Saga "${data.sagaId}", бронь #${data.reservationId}`,
+      );
+
+      const refundResult = await this.paymentsService.refundSagaPayment(data);
+
+      await this.amqpConnection.publish(
+        RMQ_EXCHANGES.DEFAULT,
+        RMQ_ROUTING_KEYS.SAGA.EVENT_PAYMENT_REFUNDED,
+        {
+          sagaId: data.sagaId,
+          reservationId: data.reservationId,
+          paymentId: refundResult.paymentId,
+        },
+      );
+
+      this.logger.warn(
+        `📤 [SAGA PAYMENTS] Опубликовано событие компенсации "saga.event.payment.refunded"`,
+      );
+    }
+  }
+
+  /**
    * Тест: Умный ретрай и сброс в DLQ через универсальный RabbitRetryService
+
    */
   @RabbitSubscribe({
     exchange: RMQ_EXCHANGES.DIRECT_TEST,

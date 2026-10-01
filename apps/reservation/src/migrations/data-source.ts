@@ -1,6 +1,7 @@
 import { DataSource } from 'typeorm';
 import { ReservationEntity } from '../models/reservation.entity';
 import { OutboxEntity } from '@app/common';
+import { SagaInstanceEntity } from '../saga/models/saga-instance.entity';
 
 export default new DataSource({
   type: 'postgres',
@@ -9,7 +10,7 @@ export default new DataSource({
   database: process.env.POSTGRES_DB ?? 'nestdb',
   username: process.env.POSTGRES_USER ?? 'postgres',
   password: process.env.POSTGRES_PASSWORD ?? 'postgres',
-  entities: [ReservationEntity, OutboxEntity],
+  entities: [ReservationEntity, OutboxEntity, SagaInstanceEntity],
   migrations: ['apps/reservation/src/migrations/1*.ts'],
   migrationsTableName: 'migrations_reservation',
   logging: true,

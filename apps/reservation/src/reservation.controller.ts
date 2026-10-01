@@ -8,6 +8,8 @@ import {
   Delete,
   UseGuards,
   ParseIntPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ReservationService } from './reservation.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
@@ -20,12 +22,14 @@ import {
   RMQ_EXCHANGES,
   RMQ_ROUTING_KEYS,
 } from '@app/common';
+import { SagaOrchestratorService } from './saga/saga-orchestrator.service';
 
 @Controller('reservation')
 export class ReservationController {
   constructor(
     private readonly reservationsService: ReservationService,
     private readonly amqpConnection: AmqpConnection, // Внедряем коннект к RabbitMQ
+    private readonly sagaOrchestrator: SagaOrchestratorService, // Оркестратор саги
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -220,9 +224,7 @@ export class ReservationController {
    * Запись реплицируется между нодами. Защита от потери данных при сгорании сервера.
    */
   @Post('test/quorum')
-  async testQuorumQueue(
-    @Body() body: { orderId?: string; amount?: number },
-  ) {
+  async testQuorumQueue(@Body() body: { orderId?: string; amount?: number }) {
     const orderId = body.orderId || `ORDER-QUORUM-${Date.now()}`;
     const amount = body.amount || 990;
 
@@ -247,9 +249,7 @@ export class ReservationController {
    * RabbitMQ САМ вычисляет хэш и раскладывает по шардам: 'orders-shard-1' или 'orders-shard-2'!
    */
   @Post('test/sharding')
-  async testSharding(
-    @Body() body: { userId: number; amount?: number },
-  ) {
+  async testSharding(@Body() body: { userId: number; amount?: number }) {
     const userId = body.userId || Math.floor(Math.random() * 1000) + 1;
     const amount = body.amount || 450;
     const orderId = `ORDER-SHARD-${userId}-${Date.now()}`;
@@ -267,6 +267,74 @@ export class ReservationController {
       userId,
       orderId,
       info: `Сообщение отправлено в обменник 'sharded-orders-exchange' с ключом '${userId}'. Брокер сам определил целевой шард!`,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SAGA PATTERN: ОРКЕСТРАЦИЯ РАСПРЕДЕЛЕННОЙ ТРАНЗАКЦИИ
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 🎓 ЗАПУСК EVENT-DRIVEN SAGA (АСИНХРОННАЯ ОРКЕСТРАЦИЯ)
+   *
+   * 📌 Мгновенный ответ HTTP 202 Accepted (поток Node.js не блокируется!).
+   * Сервисы общаются через события в RabbitMQ, стейт персистится в PostgreSQL.
+   *
+   * 📌 СЦЕНАРИИ ТЕСТИРОВАНИЯ:
+   * 1. Успех (Happy Path):
+   *    amount: 300 -> Бронь PENDING -> Платеж CONFIRMED -> Email CONFIRMED -> Бронь CONFIRMED, Сага COMPLETED.
+   * 2. Отказ платежа (Payment Failure):
+   *    simulateFailure: true ИЛИ amount: 1500 -> Отказ -> Бронь CANCELLED -> Email об отмене -> Сага COMPENSATED_FAILED.
+   * 3. Каскадный возврат средств (Cascading Refund):
+   *    simulateNotifyFailure: true -> Платеж списался -> Email упал -> Сага командует REFUND ->
+   *    Бронь CANCELLED -> Платеж переведен в REFUNDED в БД payments -> Сага COMPENSATED_FAILED.
+   */
+  @Post('test/saga/booking')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async testSagaBooking(
+    @Body()
+    body: {
+      amount?: number;
+      email?: string;
+      simulateFailure?: boolean;
+      simulateNotifyFailure?: boolean;
+    },
+  ) {
+    const amount = body.amount ?? 300;
+    const email = body.email || 'traveler@example.com';
+    const simulateFailure = body.simulateFailure ?? false;
+    const simulateNotifyFailure = body.simulateNotifyFailure ?? false;
+
+    return this.sagaOrchestrator.startBookingSaga({
+      amount,
+      email,
+      simulateFailure,
+      simulateNotifyFailure,
+    });
+  }
+
+  /**
+   * Получить статус и подробный аудит-лог шагов конкретной Саги по ID
+   */
+  @Get('test/saga/:sagaId')
+  async getSagaDetails(@Param('sagaId') sagaId: string) {
+    const saga = await this.sagaOrchestrator.getSaga(sagaId);
+    if (!saga) {
+      return { success: false, message: `Saga with ID "${sagaId}" not found` };
+    }
+    return { success: true, saga };
+  }
+
+  /**
+   * Список всех выполненных Саг
+   */
+  @Get('test/saga')
+  async getAllSagas() {
+    const sagas = await this.sagaOrchestrator.getAllSagas();
+    return {
+      success: true,
+      count: sagas.length,
+      sagas,
     };
   }
 

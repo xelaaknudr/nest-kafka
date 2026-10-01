@@ -24,14 +24,23 @@
 
 ## 🚀 Архитектура и База знаний по Message Brokers
 
-Этот проект является боевым эталоном распределенной микросервисной архитектуры на **NestJS**, **RabbitMQ** и **PostgreSQL**, реализующим передовые Enterprise-паттерны надежности:
+Этот проект является боевым эталоном распределенной микросервисной архитектуры на **NestJS**, **RabbitMQ**, **Apache Kafka** и **PostgreSQL**, реализующим передовые Enterprise-паттерны надежности:
 
+### RabbitMQ
 *   🛡️ **[Полное руководство по RabbitMQ (RABBITMQ.md)](./RABBITMQ.md)** — исчерпывающий учебник по AMQP, RPC, Dead Letter Queues, Idempotency, Transactional Outbox и масштабированию кластеров.
+*   📈 **[Масштабирование RabbitMQ (RABBITMQ_SCALING_GUIDE.md)](./RABBITMQ_SCALING_GUIDE.md)** — Quorum Queues (Raft), Consistent Hash Sharding, все типы Exchange.
 *   📦 **Transactional Outbox (Hexagonal)** — 100% гарантия доставки событий без потери данных через `FOR UPDATE SKIP LOCKED`.
 *   🔁 **Idempotent Consumers** — защита от дублирования платежей на уровне базы данных.
-*   ⚡ **Масштабирование RabbitMQ** — разбор Quorum Queues, Consistent Hash Sharding, Streams и Backpressure.
+
+### Apache Kafka
+*   📖 **[Полное руководство по Kafka (KAFKA.md)](./KAFKA.md)** — Broker, Topic, Partition, Offset, Consumer Groups, Exactly-Once Transactions, Seek.
+*   📈 **[Масштабирование Kafka (KAFKA_SCALING_GUIDE.md)](./KAFKA_SCALING_GUIDE.md)** — Партиции vs Шарды RabbitMQ, Consumer Groups, Replication Factor, Log Compaction, Lag.
+*   🔧 **Кастомный `KafkaModule`** — `libs/common/src/kafka/` — идемпотентный продюсер, ручной Offset commit, Seek, транзакции.
+*   ⚡ **Тестовые эндпоинты** — `POST /kafka/test/basic`, `/partitioned`, `/batch`, `/transactional`, `GET /kafka/test/seek/:offset`.
+*   🖥️ **Kafbat UI** — http://localhost:8080 (аналог RabbitMQ Management UI для Kafka).
 
 ---
+
 
 ## 🛠️ Project Setup
 

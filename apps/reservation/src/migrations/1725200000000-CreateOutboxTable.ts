@@ -4,7 +4,9 @@ export class CreateOutboxTable1725200000000 implements MigrationInterface {
   name = 'CreateOutboxTable1725200000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP TABLE IF EXISTS "reservations"."outbox" CASCADE`);
+    await queryRunner.query(
+      `DROP TABLE IF EXISTS "reservations"."outbox" CASCADE`,
+    );
 
     await queryRunner.query(`
       CREATE TABLE "reservations"."outbox" (
@@ -29,7 +31,9 @@ export class CreateOutboxTable1725200000000 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX IF EXISTS "reservations"."IDX_outbox_status_createdAt"`);
+    await queryRunner.query(
+      `DROP INDEX IF EXISTS "reservations"."IDX_outbox_status_createdAt"`,
+    );
     await queryRunner.query(`DROP TABLE IF EXISTS "reservations"."outbox"`);
   }
 }

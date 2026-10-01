@@ -16,6 +16,9 @@ export const RMQ_QUEUES = {
   FANOUT_TEST_NOTIF: 'fanout-notif-queue',
   TOPIC_TEST_EU: 'topic-eu-queue',
   TOPIC_TEST_US: 'topic-us-queue',
+  SAGA_PAYMENTS_COMMANDS: 'saga-payments-commands-queue',
+  SAGA_NOTIFICATIONS_COMMANDS: 'saga-notifications-commands-queue',
+  SAGA_ORCHESTRATOR_EVENTS: 'saga-orchestrator-events-queue',
 } as const;
 
 export const RMQ_ROUTING_KEYS = {
@@ -31,6 +34,18 @@ export const RMQ_ROUTING_KEYS = {
   DIRECT_TEST: 'direct.test.key',
   TOPIC_TEST_EU: 'eu.#',
   TOPIC_TEST_US: 'us.#',
+  SAGA: {
+    // Commands (шлет Оркестратор)
+    COMMAND_PAYMENT_PROCESS: 'saga.command.payment.process',
+    COMMAND_PAYMENT_REFUND: 'saga.command.payment.refund',
+    COMMAND_NOTIFY_SEND: 'saga.command.notify.send',
+    // Events (публикуют микросервисы)
+    EVENT_PAYMENT_SUCCESS: 'saga.event.payment.success',
+    EVENT_PAYMENT_FAILED: 'saga.event.payment.failed',
+    EVENT_PAYMENT_REFUNDED: 'saga.event.payment.refunded',
+    EVENT_NOTIFY_SUCCESS: 'saga.event.notify.success',
+    EVENT_NOTIFY_FAILED: 'saga.event.notify.failed',
+  },
   LEARNING: {
     SUBSCRIBE: 'learning.subscribe',
     RPC: 'learning.rpc',
@@ -45,3 +60,4 @@ export const RMQ_ROUTING_KEYS = {
     },
   },
 } as const;
+

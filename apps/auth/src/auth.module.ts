@@ -1,10 +1,15 @@
 import { Module } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 import { UsersModule } from './users/users.module';
-import { HealthModule, LoggerModule, CommonRabbitMqModule } from '@app/common';
+import {
+  HealthModule,
+  LoggerModule,
+  CommonRabbitMqModule,
+  KafkaModule,
+  KAFKA_GROUPS,
+} from '@app/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-
 import { AuthService } from './auth.service';
 import { AuthConsumer } from './auth.consumer';
 import * as Joi from 'joi';
@@ -32,6 +37,7 @@ import { PassportModule } from '@nestjs/passport';
         POSTGRES_DB: Joi.string().required(),
         POSTGRES_USER: Joi.string().required(),
         POSTGRES_PASSWORD: Joi.string().required(),
+        KAFKA_BROKERS: Joi.string().default('kafka:9092'),
       }),
     }),
     JwtModule.registerAsync({
@@ -42,6 +48,20 @@ import { PassportModule } from '@nestjs/passport';
         signOptions: {
           expiresIn: parseInt(configService.get<string>('JWT_EXPIRATION'), 10),
         },
+      }),
+    }),
+    /**
+     * 🎓 AUTH = КОНСЬЮМЕР
+     * Паттерн: Round-Robin (user.registered без key) + Idempotency Guard.
+     */
+    KafkaModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        clientId: 'auth-service',
+        brokers: configService.get<string>('KAFKA_BROKERS')
+          ? configService.get<string>('KAFKA_BROKERS').split(',')
+          : ['localhost:9092'],
+        groupId: KAFKA_GROUPS.AUTH,
       }),
     }),
   ],

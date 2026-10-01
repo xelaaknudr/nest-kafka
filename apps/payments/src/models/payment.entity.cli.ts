@@ -1,4 +1,10 @@
-import { Column, Entity, Index, PrimaryGeneratedColumn, CreateDateColumn } from 'typeorm';
+import {
+  Column,
+  Entity,
+  Index,
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+} from 'typeorm';
 
 @Entity({ schema: 'payments' })
 export class PaymentEntity {

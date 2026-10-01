@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import { RMQ_EXCHANGES, RMQ_ROUTING_KEYS } from '@app/common';
+import {
+  RMQ_EXCHANGES,
+  RMQ_ROUTING_KEYS,
+  MessageMeta,
+  PaymentCreatedEvent,
+} from '@app/common';
 import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { PaymentsCreateChargeDto } from '../dto/payments-create-charge.dto';
 import { PaymentsRepository } from './payments.repository';
@@ -141,4 +146,157 @@ export class PaymentsService {
   async getPaymentsByOrderId(orderId: string) {
     return this.paymentsRepository.find({ orderId });
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // [ШАГИ 3, 5, 6, 8] Обработка платежа из Kafka
+  // ─────────────────────────────────────────────────────────────────────────
+
+  async processPaymentFromKafka(
+    payload: PaymentCreatedEvent,
+    meta: MessageMeta,
+  ) {
+    this.logger.log(
+      `💳 [PAYMENTS] Получен платеж!\n` +
+        `   UserId: ${payload.userId} | Amount: ${payload.amount} ${payload.currency ?? 'RUB'}\n` +
+        `   🎓 Partition: ${meta.partition} | Offset: ${meta.offset}\n` +
+        `   🎓 key="${payload.userId}" → MurmurHash2 → всегда Partition ${meta.partition} (FIFO!)`,
+    );
+
+    // СИМУЛЯЦИЯ ОШИБКИ (Шаг 8 - DLT)
+    // Бизнес-логика просто выбрасывает ошибку при сбое.
+    // Вся логика ретраев (backoff) и отправки в DLT теперь инкапсулирована в KafkaConsumerService!
+    if (payload.simulateFailure) {
+      this.logger.warn(
+        `⚠️ [PAYMENTS] Симуляция сбоя платежа для пользователя ${payload.userId}!`,
+      );
+      throw new Error(
+        `Симуляция сбоя платежа для пользователя ${payload.userId}`,
+      );
+    }
+
+    // УСПЕШНАЯ БИЗНЕС-ЛОГИКА
+    this.logger.log(
+      `✅ [PAYMENTS] Платеж ${payload.paymentId ?? 'N/A'} успешно обработан!\n` +
+        `   → Сейчас KafkaConsumerService закоммитит offset ${meta.offset} + 1`,
+    );
+  }
+
+  async testFanOut(payload: any, meta: any) {
+    this.logger.log(
+      `📦 [PAYMENTS.FANOUT] Получено сообщение! Payload: ${JSON.stringify(payload)}`,
+    );
+    this.logger.log(
+      `📦 [PAYMENTS.FANOUT] Metadata: Partition: ${meta.partition} | Offset: ${meta.offset}`,
+    );
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * SAGA PATTERN: ОБРАБОТКА ПЛАТЕЖА (УСПЕХ ИЛИ ОТКАЗ)
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  async processSagaPayment(data: {
+    sagaId: string;
+    reservationId: number;
+    amount: number;
+    email: string;
+    simulateFailure?: boolean;
+  }) {
+    if (data.simulateFailure || data.amount > 1000) {
+      const reason = data.simulateFailure
+        ? 'Симуляция отказа банка (simulateFailure = true)'
+        : `Превышен лимит списания: $${data.amount} > $1000 (Insufficient funds)`;
+
+      this.logger.warn(
+        `❌ [SAGA PAYMENTS] Платеж отклонен для Saga "${data.sagaId}"! Причина: ${reason}`,
+      );
+
+      return {
+        success: false,
+        sagaId: data.sagaId,
+        reservationId: data.reservationId,
+        reason,
+      };
+    }
+
+    const payment = new PaymentEntity({
+      idempotencyKey: `SAGA-PAY-${data.sagaId}`,
+      orderId: `RES-${data.reservationId}`,
+      amount: data.amount,
+      email: data.email,
+      status: 'COMPLETED',
+    });
+
+    const saved = await this.paymentsRepository.create(payment);
+
+    this.logger.log(
+      `✅ [SAGA PAYMENTS] Платеж на сумму $${data.amount} одобрен (ID: ${saved.id}) для Saga "${data.sagaId}"`,
+    );
+
+    return {
+      success: true,
+      sagaId: data.sagaId,
+      reservationId: data.reservationId,
+      paymentId: saved.id,
+      amount: data.amount,
+    };
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * SAGA PATTERN: КОМПЕНСИРУЮЩАЯ ТРАНЗАКЦИЯ — ВОЗВРАТ ПЛАТЕЖА (REFUND)
+   * ═══════════════════════════════════════════════════════════════════════════
+   * Вызывается, если платеж прошел успешно, но последующий шаг Саги
+   * (например, сбой почтового сервиса) завершился ошибкой.
+   * Переводит запись в локальной таблице payments.payment_entity в статус 'REFUNDED'.
+   */
+  async refundSagaPayment(data: { sagaId: string; reservationId: number }) {
+    this.logger.warn(
+      `↩️ [SAGA PAYMENTS] Получена команда на возврат средств (Refund) для Saga "${data.sagaId}"...`,
+    );
+
+    const idempotencyKey = `SAGA-PAY-${data.sagaId}`;
+    try {
+      const payment = await this.paymentsRepository.findOne({
+        idempotencyKey,
+      });
+
+      if (payment) {
+        payment.status = 'REFUNDED';
+        await this.paymentsRepository.findOneAndUpdate(
+          { idempotencyKey },
+          { status: 'REFUNDED' },
+        );
+        this.logger.warn(
+          `↩️ [SAGA PAYMENTS] Платеж #${payment.id} переведен в статус "REFUNDED" в БД payments (Rollback завершен)!`,
+        );
+        return {
+          success: true,
+          sagaId: data.sagaId,
+          reservationId: data.reservationId,
+          paymentId: payment.id,
+        };
+      } else {
+        this.logger.warn(
+          `⚠️ [SAGA PAYMENTS] Платеж для Saga "${data.sagaId}" не найден (возможно, списания не происходило).`,
+        );
+        return {
+          success: true,
+          sagaId: data.sagaId,
+          reservationId: data.reservationId,
+        };
+      }
+    } catch (err) {
+      this.logger.error(
+        `❌ [SAGA PAYMENTS] Ошибка при возврате платежа: ${err.message}`,
+      );
+      return {
+        success: false,
+        sagaId: data.sagaId,
+        reservationId: data.reservationId,
+        reason: err.message,
+      };
+    }
+  }
 }
+
