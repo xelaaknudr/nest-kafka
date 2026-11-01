@@ -10,3 +10,4 @@ export * from './health';
 export * from './rabbitmq';
 export * from './outbox';
 export * from './redis';
+export * from './knex';

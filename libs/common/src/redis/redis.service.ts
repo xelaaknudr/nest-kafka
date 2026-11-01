@@ -51,6 +51,128 @@ export class RedisService {
     return this.client.set(key, value);
   }
 
+  /**
+   * 🚀 Продакшн Cache-Aside:
+   * Проверяет кэш. При попадании — сразу возвращает данные.
+   * При промахе — вызывает fetcher, кэширует с TTL (+Jitter) и возвращает результат.
+   */
+  async getOrSet<T>(
+    key: string,
+    ttlSeconds: number,
+    fetcher: () => Promise<T>,
+    options?: { jitterSeconds?: number },
+  ): Promise<{ data: T; source: 'CACHE_HIT' | 'CACHE_MISS' }> {
+    const cached = await this.client.get(key);
+    if (cached !== null) {
+      try {
+        return { data: JSON.parse(cached) as T, source: 'CACHE_HIT' };
+      } catch {
+        return { data: cached as unknown as T, source: 'CACHE_HIT' };
+      }
+    }
+
+    const freshData = await fetcher();
+    const jitter = options?.jitterSeconds
+      ? Math.floor(Math.random() * options.jitterSeconds)
+      : 0;
+    const finalTtl = ttlSeconds + jitter;
+
+    const serialized =
+      typeof freshData === 'string' ? freshData : JSON.stringify(freshData);
+    await this.client.set(key, serialized, 'EX', finalTtl);
+
+    return { data: freshData, source: 'CACHE_MISS' };
+  }
+
+  /**
+   * 🛡️ Продакшн Cache-Aside с защитой от Cache Stampede (Mutex Lock):
+   * При промахе кэша только один запрос (лидер) захватывает распределённый замок и идёт в БД.
+   * Остальные параллельные запросы ждут освобождения замка и читают готовый результат из кэша.
+   */
+  async getOrSetWithLock<T>(
+    key: string,
+    ttlSeconds: number,
+    fetcher: () => Promise<T>,
+    options?: {
+      lockTtlSeconds?: number;
+      retryDelayMs?: number;
+      maxRetries?: number;
+      jitterSeconds?: number;
+    },
+  ): Promise<{
+    data: T;
+    source: 'CACHE_HIT' | 'CACHE_MISS_LEADER' | 'CACHE_HIT_FOLLOWER';
+  }> {
+    // 1. Проверяем кэш
+    const cached = await this.client.get(key);
+    if (cached !== null) {
+      try {
+        return { data: JSON.parse(cached) as T, source: 'CACHE_HIT' };
+      } catch {
+        return { data: cached as unknown as T, source: 'CACHE_HIT' };
+      }
+    }
+
+    const lockKey = `${key}:lock`;
+    const lockTtl = options?.lockTtlSeconds ?? 5;
+    const retryDelay = options?.retryDelayMs ?? 50;
+    const maxRetries = options?.maxRetries ?? 10;
+
+    // 2. Пытаемся захватить мьютекс
+    const lockAcquired = await this.client.set(lockKey, 'locked', 'EX', lockTtl, 'NX');
+
+    if (lockAcquired === 'OK') {
+      // Мы Лидер: только мы идём в базу данных
+      try {
+        const freshData = await fetcher();
+        const jitter = options?.jitterSeconds
+          ? Math.floor(Math.random() * options.jitterSeconds)
+          : 0;
+        const serialized =
+          typeof freshData === 'string' ? freshData : JSON.stringify(freshData);
+        await this.client.set(key, serialized, 'EX', ttlSeconds + jitter);
+        return { data: freshData, source: 'CACHE_MISS_LEADER' };
+      } finally {
+        await this.client.del(lockKey);
+      }
+    }
+
+    // 3. Мы Последователь: замок занят, ждём пока лидер прогреет кэш
+    for (let i = 0; i < maxRetries; i++) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      const retryCached = await this.client.get(key);
+      if (retryCached !== null) {
+        try {
+          return { data: JSON.parse(retryCached) as T, source: 'CACHE_HIT_FOLLOWER' };
+        } catch {
+          return { data: retryCached as unknown as T, source: 'CACHE_HIT_FOLLOWER' };
+        }
+      }
+    }
+
+    // Фоллбэк если лидер завис или упал: вызываем напрямую
+    const fallbackData = await fetcher();
+    return { data: fallbackData, source: 'CACHE_MISS_LEADER' };
+  }
+
+  /**
+   * 🚀 Атомарный Compare-And-Swap (CAS):
+   * Вызывает предзарегистрированный Lua-скрипт (compare-and-swap.script.ts).
+   * Перезаписывает ключ только если текущее значение совпадает с expectedValue.
+   */
+  async compareAndSwap(
+    key: string,
+    expectedValue: string,
+    newValue: string,
+  ): Promise<boolean> {
+    const result = await (this.client as any).compareAndSwap(
+      key,
+      expectedValue,
+      newValue,
+    );
+    return result === 1;
+  }
+
   async del(...keys: string[]): Promise<number> {
     return this.client.del(...keys);
   }

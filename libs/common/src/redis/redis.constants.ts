@@ -12,3 +12,4 @@
  */
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
+export const REDLOCK_CLIENT = 'REDLOCK_CLIENT';

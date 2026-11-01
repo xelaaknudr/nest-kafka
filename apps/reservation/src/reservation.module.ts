@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { ReservationController } from './reservation.controller';
 import { ReservationService } from './reservation.service';
 import {
@@ -9,6 +12,8 @@ import {
   LoggerModule,
   KafkaModule,
   RedisModule,
+  REDIS_CLIENT,
+  KnexModule,
 } from '@app/common';
 import { ReservationRepository } from './reservation.repository';
 import { ReservationEntity } from './models/reservation.entity';
@@ -18,7 +23,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { KafkaLearnController } from './kafka-test/kafka-learn.controller';
 import { SagaOrchestratorService } from './saga/saga-orchestrator.service';
 import { SagaEventsConsumer } from './saga/saga-events.consumer';
+import { ScheduleModule } from '@nestjs/schedule';
+import { DailyCleanupTask } from './tasks/daily-cleanup.task';
 import { RedisLearnController } from './redis-learn/redis-learn.controller';
+import { PgLearnModule } from './pg-learn/pg-learn.module';
 
 @Module({
   imports: [
@@ -34,9 +42,11 @@ import { RedisLearnController } from './redis-learn/redis-learn.controller';
         POSTGRES_PASSWORD: Joi.string().required(),
         RABBITMQ_URI: Joi.string().required(),
         KAFKA_BROKERS: Joi.string().default('kafka:9092'),
-        // Redis — обязательные переменные для RedisModule
+        // Redis — параметры для Standalone Master или Sentinel
         REDIS_HOST: Joi.string().default('localhost'),
         REDIS_PORT: Joi.number().default(6379),
+        REDIS_SENTINEL_HOSTS: Joi.string().optional(),
+        REDIS_SENTINEL_NAME: Joi.string().default('mymaster'),
       }),
     }),
     HealthModule,
@@ -69,6 +79,28 @@ import { RedisLearnController } from './redis-learn/redis-learn.controller';
      * доступны во всём приложении без дополнительных imports.
      */
     RedisModule.forRootAsync(),
+    /**
+     * 🚀 PRODUCTION THROTTLER (RATE LIMITING)
+     * Глобальный троттлинг на базе Redis для защиты всех микросервисов.
+     */
+    ThrottlerModule.forRootAsync({
+      inject: [REDIS_CLIENT],
+      useFactory: (redis: any) => ({
+        throttlers: [{ name: 'default', ttl: 60000, limit: 30 }],
+        storage: new ThrottlerStorageRedisService(redis),
+      }),
+    }),
+    /**
+     * ⏰ SCHEDULER MODULE
+     * Инициализирует шедулер для @Cron задач
+     */
+    ScheduleModule.forRoot(),
+    /**
+     * 🐘 KNEX & PG LEARN MODULE
+     * Подключает Knex pool и контроллер /pg/learn для Senior PG обучения.
+     */
+    KnexModule,
+    PgLearnModule,
   ],
   controllers: [ReservationController, KafkaLearnController, RedisLearnController],
   providers: [
@@ -76,8 +108,13 @@ import { RedisLearnController } from './redis-learn/redis-learn.controller';
     ReservationRepository,
     SagaOrchestratorService,
     SagaEventsConsumer,
+    DailyCleanupTask,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
-  exports: [SagaOrchestratorService],
+  exports: [SagaOrchestratorService, DailyCleanupTask],
 })
 export class ReservationModule {}
 

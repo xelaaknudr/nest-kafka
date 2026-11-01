@@ -24,6 +24,12 @@ import {
 } from '@app/common';
 import { SagaOrchestratorService } from './saga/saga-orchestrator.service';
 
+export interface ReservationPingResponse {
+  status: 'ok';
+  uptime: number;
+  timestamp: string;
+}
+
 @Controller('reservation')
 export class ReservationController {
   constructor(
@@ -31,6 +37,15 @@ export class ReservationController {
     private readonly amqpConnection: AmqpConnection, // Внедряем коннект к RabbitMQ
     private readonly sagaOrchestrator: SagaOrchestratorService, // Оркестратор саги
   ) {}
+
+  @Get('ping')
+  ping(): ReservationPingResponse {
+    return {
+      status: 'ok',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    };
+  }
 
   @UseGuards(JwtAuthGuard)
   @Post()

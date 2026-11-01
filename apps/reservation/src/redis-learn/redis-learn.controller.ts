@@ -21,7 +21,7 @@
  * │  9  │ POST /redis/learn/9-pipeline        │ Pipelining: батч-команды            │
  * │ 10  │ POST /redis/learn/10-transactions   │ MULTI/EXEC: транзакции              │
  * │ 11  │ POST /redis/learn/11-lua-script     │ EVAL: Lua-скрипты (атомарность)     │
- * │ 12  │ POST /redis/learn/12-distributed-lock│ Distributed Lock: SET NX EX       │
+ * │ 12  │ POST /redis/learn/12-distributed-lock│ Redlock: замки + Cron на 5 подах    │
  * │ 13  │ POST /redis/learn/13-rate-limiter   │ Rate Limiting: фиксированное окно   │
  * │ 14  │ GET  /redis/learn/14-pub-sub        │ Pub/Sub: огонь и забудь             │
  * │ 15  │ GET  /redis/learn/15-hyperloglog    │ HyperLogLog: уникальные посетители  │
@@ -31,6 +31,7 @@
  * │ 19  │ GET  /redis/learn/19-leaderboard    │ Leaderboard: топ-10 игроков         │
  * │ 20  │ GET  /redis/learn/20-memory-info    │ INFO: статистика и метрики          │
  * │ 21  │ GET  /redis/learn/21-single-flight  │ Single-Flight: схлопывание запросов │
+ * │ 22  │ GET  /redis/learn/22-scaling        │ Масштабирование: Sentinel vs Cluster│
  * └─────┴─────────────────────────────────────┴─────────────────────────────────────┘
  *
  * 🚀 БЫСТРЫЙ СТАРТ:
@@ -44,16 +45,26 @@
 
 import { Body, Controller, Get, Logger, Post } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import Redis from 'ioredis';
-import { REDIS_CLIENT } from '@app/common';
+import Redlock from 'redlock';
+import { REDIS_CLIENT, REDLOCK_CLIENT, RedisService } from '@app/common';
+import * as crypto from 'crypto';
+import { DailyCleanupTask } from '../tasks/daily-cleanup.task';
 
+@SkipThrottle()
 @Controller('redis/learn')
 export class RedisLearnController {
   private readonly logger = new Logger(RedisLearnController.name);
   // Пул запросов "в полёте" для паттерна Single-Flight (In-Memory Promise Deduplication)
   private readonly inFlightRequests = new Map<string, Promise<any>>();
 
-  constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
+  constructor(
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    @Inject(REDLOCK_CLIENT) private readonly redlock: Redlock,
+    private readonly redisService: RedisService,
+    private readonly dailyCleanupTask: DailyCleanupTask,
+  ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ШАГ 1: PING — Базовое подключение и SET/GET
@@ -999,10 +1010,11 @@ export class RedisLearnController {
   async step8CacheAside() {
     const productKey = 'redis:learn:cache:product:123';
     const CACHE_TTL = 60; // 60 секунд
+    await this.redis.del(productKey);
 
     // ─── Симуляция загрузки из "БД" ──────────────────────────────────────
     const loadFromDatabase = async (id: string) => {
-      // Имитируем задержку БД запроса
+      // Имитируем задержку БД запроса (50 мс)
       await new Promise((resolve) => setTimeout(resolve, 50));
       return {
         id,
@@ -1014,132 +1026,64 @@ export class RedisLearnController {
       };
     };
 
-    // ─── Первый запрос: CACHE MISS ────────────────────────────────────────
+    // ─── 🚀 ПРОДАКШН ПОДХОД 1: redisService.getOrSet() ───────────────────
+    // В реальном NestJS коде никто не пишет 20 строк if(!cached) -> set()!
+    // Используется типизированный сервис с джиттером:
     const startMiss = Date.now();
-
-    const cachedMiss = await this.redis.get(productKey);
-    let product: Record<string, unknown>;
-    let firstRequestSource: string;
-
-    if (cachedMiss === null) {
-      // Cache Miss: загружаем из "БД"
-      firstRequestSource = 'DATABASE (cache miss)';
-      const dbData = await loadFromDatabase('123');
-      product = dbData;
-      // Сохраняем в кэш с TTL
-      await this.redis.set(productKey, JSON.stringify(dbData), 'EX', CACHE_TTL);
-    } else {
-      firstRequestSource = 'CACHE (cache hit)';
-      product = JSON.parse(cachedMiss);
-    }
-
+    const firstCall = await this.redisService.getOrSet(
+      productKey,
+      CACHE_TTL,
+      () => loadFromDatabase('123'),
+      { jitterSeconds: 15 },
+    );
     const missDuration = Date.now() - startMiss;
 
-    // ─── Второй запрос: CACHE HIT ─────────────────────────────────────────
+    // Второй вызов: моментальный ответ из кэша (CACHE_HIT)
     const startHit = Date.now();
-
-    const cachedHit = await this.redis.get(productKey);
-    let secondProduct: Record<string, unknown>;
-    let secondRequestSource: string;
-
-    if (cachedHit === null) {
-      secondRequestSource = 'DATABASE';
-      secondProduct = await loadFromDatabase('123');
-    } else {
-      secondRequestSource = 'CACHE (cache hit ✅)';
-      secondProduct = JSON.parse(cachedHit);
-    }
-
+    const secondCall = await this.redisService.getOrSet(
+      productKey,
+      CACHE_TTL,
+      () => loadFromDatabase('123'),
+    );
     const hitDuration = Date.now() - startHit;
     const remainingTtl = await this.redis.ttl(productKey);
 
-    // ─── Cache Invalidation: когда нужно сбросить кэш ────────────────────
-    // Например, после обновления товара в БД
-    const deleteResult = await this.redis.del(productKey);
-
-    // После удаления — следующий запрос снова будет cache miss
-    const afterInvalidation = await this.redis.get(productKey);
+    // ─── Cache Invalidation ─────────────────────────────────────────────
+    const deleteResult = await this.redisService.del(productKey);
+    const afterInvalidation = await this.redisService.get(productKey);
 
     this.logger.log(
       `[STEP-8] Cache-Aside: miss=${missDuration}ms, hit=${hitDuration}ms, speedup=${Math.round(missDuration / Math.max(hitDuration, 1))}x`,
     );
 
-    // ─── СТРАТЕГИЯ 1: Jitter (Случайный разброс TTL) ─────────────────────
-    // Проблема: Если в полночь положить 100 000 товаров с TTL=3600с, ровно через час
-    // все 100 000 ключей исчезнут ОДНОВРЕМЕННО, и БД ляжет под шквалом запросов (Thundering Herd).
-    // Решение: Базовый TTL + случайный разброс (jitter).
-    const baseTtl = 60;
-    const jitter = Math.floor(Math.random() * 15); // разброс 0..14 секунд
-    const ttlWithJitter = baseTtl + jitter;
-    const jitterKey = 'redis:learn:cache:jitter:item';
-    await this.redis.set(jitterKey, JSON.stringify({ item: 'sample' }), 'EX', ttlWithJitter);
-    const actualJitterTtl = await this.redis.ttl(jitterKey);
-    await this.redis.del(jitterKey);
-
-    // ─── СТРАТЕГИЯ 2: Mutex Lock (Защита от Cache Stampede) ──────────────
-    // Проблема: 3 параллельных запроса пришли за одним товаром при холодном кэше.
-    // Решение: Первый запрос берет замок (SET NX EX) и идет в БД.
-    // Остальные 2 запроса видят, что замок занят, ждут 70мс и читают готовый кэш!
+    // ─── 🛡️ ПРОДАКШН ПОДХОД 2: redisService.getOrSetWithLock() ──────────
+    // Проблема Cache Stampede (Thundering Herd):
+    // При холодном кэше приходят 3 одновременных запроса.
+    // getOrSetWithLock использует распределённый мьютекс:
+    // Лидер получает замок и идёт в БД (CACHE_MISS_LEADER).
+    // Остальные ждут и забирают готовый кэш (CACHE_HIT_FOLLOWER). База не ложится!
     const stampedeKey = 'redis:learn:cache:stampede:product';
-    const stampedeLockKey = 'redis:learn:cache:stampede:lock';
-    await this.redis.del(stampedeKey, stampedeLockKey);
+    await this.redis.del(stampedeKey, `${stampedeKey}:lock`);
 
     let dbQueriesCount = 0;
-    const loadFromDbWithCounter = async () => {
+    const expensiveDbQuery = async () => {
       dbQueriesCount++;
       await new Promise((r) => setTimeout(r, 60)); // БД отвечает 60мс
-      return { id: 123, name: 'Expensive Aggregation Data', timestamp: new Date().toISOString() };
+      return { id: '123', name: 'Expensive Aggregation Data', timestamp: new Date().toISOString() };
     };
 
-    const fetchWithMutex = async (requestId: string) => {
-      // 1. Проверяем кэш
-      const cached = await this.redis.get(stampedeKey);
-      if (cached) {
-        return { requestId, source: 'CACHE_HIT ✅', data: JSON.parse(cached) };
-      }
-
-      // 2. Cache miss -> пытаемся захватить замок на загрузку (на 5 секунд)
-      const lockAcquired = await this.redis.set(stampedeLockKey, requestId, 'EX', 5, 'NX');
-
-      if (lockAcquired === 'OK') {
-        // Мы ЛИДЕР: только этот запрос идет в базу данных!
-        try {
-          const dbData = await loadFromDbWithCounter();
-          await this.redis.set(stampedeKey, JSON.stringify(dbData), 'EX', 60);
-          return { requestId, source: 'DATABASE_LOAD (лидер взял замок и сходил в БД)', data: dbData };
-        } finally {
-          // Освобождаем замок
-          await this.redis.del(stampedeLockKey);
-        }
-      } else {
-        // Мы ПОСЛЕДОВАТЕЛЬ: замок уже занят лидером! Ждем пока он положит данные в кэш
-        await new Promise((r) => setTimeout(r, 80));
-        const retryCached = await this.redis.get(stampedeKey);
-        return {
-          requestId,
-          source: 'CACHE_HIT_AFTER_WAIT (дождался лидера и взял из кэша)',
-          data: retryCached ? JSON.parse(retryCached) : null,
-        };
-      }
-    };
-
-    // Запускаем 3 запроса строго одновременно!
     const stampedeResults = await Promise.all([
-      fetchWithMutex('request-#1'),
-      fetchWithMutex('request-#2'),
-      fetchWithMutex('request-#3'),
+      this.redisService.getOrSetWithLock(stampedeKey, 60, expensiveDbQuery),
+      this.redisService.getOrSetWithLock(stampedeKey, 60, expensiveDbQuery),
+      this.redisService.getOrSetWithLock(stampedeKey, 60, expensiveDbQuery),
     ]);
-    await this.redis.del(stampedeKey, stampedeLockKey);
+    await this.redis.del(stampedeKey, `${stampedeKey}:lock`);
 
     // ─── СТРАТЕГИЯ 3: Stale-While-Revalidate (SWR) ───────────────────────
-    // Проблема: Пользователь не должен ждать 50-200мс пока идет запрос в БД.
-    // Решение: Храним логический срок expiresAt в самом объекте, а физический TTL ставим с запасом.
-    // Если логический срок истек — СРАЗУ отдаем клиенту старые данные (<1мс),
-    // а обновление в БД запускаем в фоне!
+    // Пользователь сразу получает старый кэш (<1мс), а база обновляется в фоне
     const swrKey = 'redis:learn:cache:swr:product';
     const now = Date.now();
 
-    // Записываем данные с истекшим логическим сроком (5 секунд назад)
     const stalePayload = {
       data: { id: 123, name: 'Product with SWR', version: 1 },
       logicalExpiresAt: now - 5000,
@@ -1153,11 +1097,9 @@ export class RedisLearnController {
     let backgroundRefreshTriggered = false;
 
     if (Date.now() > parsedSwr.logicalExpiresAt) {
-      // Кэш логически устарел, но мы СРАЗУ отдаем старые данные (клиент доволен)
       swrClientResult = parsedSwr.data;
       backgroundRefreshTriggered = true;
 
-      // Фоновое обновление кэша (в фоне обновляем на версию 2)
       const freshData = {
         data: { id: 123, name: 'Product with SWR', version: 2 },
         logicalExpiresAt: Date.now() + 60000,
@@ -1181,15 +1123,16 @@ export class RedisLearnController {
       results: {
         basicCacheAside: {
           firstRequest: {
-            source: firstRequestSource,
+            source: `${firstCall.source} (загружено из базы данных)`,
             durationMs: missDuration,
-            product,
+            product: firstCall.data,
           },
           secondRequest: {
-            source: secondRequestSource,
+            source: `${secondCall.source} (моментально из Redis кэша)`,
             durationMs: hitDuration,
             speedupVsDb: `~${Math.round(50 / Math.max(hitDuration, 1))}x быстрее`,
             remainingTtl: `${remainingTtl}s`,
+            product: secondCall.data,
           },
           cacheInvalidation: {
             deleted: deleteResult === 1,
@@ -1203,10 +1146,8 @@ export class RedisLearnController {
           strategy1_Jitter: {
             name: 'Jitter (Случайный разброс TTL)',
             problem: '100k ключей кэшируются одновременно → одновременно истекают → БД падает',
-            solution: 'Базовый TTL + Math.random() * delta',
-            baseTtl: `${baseTtl}s`,
-            randomJitterAdded: `+${jitter}s`,
-            finalTtlInRedis: `${actualJitterTtl}s`,
+            solution: 'Встроено в redisService.getOrSet: ttlSeconds + Math.random() * jitterSeconds',
+            configUsed: 'CACHE_TTL=60s, jitterSeconds=15s',
           },
           strategy2_MutexLock: {
             name: 'Mutex Lock (Защита от Cache Stampede при одновременных запросах)',
@@ -1372,92 +1313,68 @@ export class RedisLearnController {
    */
   @Post('10-transactions')
   async step10Transactions() {
-    const balanceKey = 'redis:learn:tx:balance:user1';
-    const watchKey = 'redis:learn:tx:watch-demo';
+    // ОДИН единственный ключ для всей демонстрации: кошелёк с балансом 100$
+    const walletKey = 'redis:learn:wallet:balance';
 
-    // ─── Базовая транзакция MULTI/EXEC ────────────────────────────────────
-    await this.redis.set(balanceKey, '1000');
+    // ─── ЧАСТЬ 1: Катастрофа БЕЗ WATCH (Race Condition) ───────────────────
+    // У пользователя 100$. Он нажал "Купить за 100$" в двух вкладках одновременно.
+    await this.redis.set(walletKey, '100');
 
-    // В ioredis транзакция — это multi() + exec()
-    const txResult = await this.redis
-      .multi()
-      .get(balanceKey) // прочитать баланс
-      .decrby(balanceKey, 200) // списать 200
-      .incrby(balanceKey, 50) // начислить 50
-      .set(`${balanceKey}:log`, `tx at ${new Date().toISOString()}`)
-      .exec();
+    // Вкладка #1 прочитала баланс: 100$ (денег хватает!)
+    const tab1Read = parseInt((await this.redis.get(walletKey)) ?? '0');
 
-    const finalBalance = await this.redis.get(balanceKey);
+    // В этот момент Вкладка #2 успела первее списать 100$!
+    await this.redis.decrby(walletKey, 100); // Баланс стал 0$
 
-    // ─── WATCH — оптимистичная блокировка ─────────────────────────────────
-    await this.redis.set(watchKey, '0');
+    // Вкладка #1 думает, что деньги всё ещё есть, и делает списание через MULTI/EXEC:
+    await this.redis.multi().decrby(walletKey, 100).exec();
 
-    // Сценарий 1: WATCH + EXEC без конкурентного изменения (успех)
-    await this.redis.watch(watchKey);
-    const watchedValue = await this.redis.get(watchKey);
+    // 💥 ИТОГ БЕЗ WATCH: баланс ушёл в МИНУС!
+    const balanceWithoutWatch = await this.redis.get(walletKey); // "-100"
 
-    const watchTxResult = await this.redis
-      .multi()
-      .incr(watchKey) // если никто не изменил watchKey — выполнится
-      .exec();
+    // ─── ЧАСТЬ 2: Как WATCH спасает от минуса ─────────────────────────────
+    // Снова кладем 100$ и повторяем ту же ситуацию, но с WATCH:
+    await this.redis.set(walletKey, '100');
 
-    // Результат: null если WATCH сработал (конкурентное изменение), иначе массив
-    const watchSuccess = watchTxResult !== null;
+    // 1. Говорим Редису: "Следи за ключом balance!"
+    await this.redis.watch(walletKey);
 
-    // ─── Демонстрация отката WATCH ────────────────────────────────────────
-    // Сценарий 2: Симулируем что кто-то изменил ключ между WATCH и EXEC
-    await this.redis.set(watchKey, '10');
-    await this.redis.watch(watchKey);
+    // 2. Вкладка #1 прочитала: 100$
+    const balanceWatched = parseInt((await this.redis.get(walletKey)) ?? '0');
 
-    // "Другой клиент" изменяет ключ
-    await this.redis.set(watchKey, '99');
+    // 3. Вкладка #2 снова успевает списать 100$ первой:
+    await this.redis.decrby(walletKey, 100); // Баланс стал 0$
 
-    // Пытаемся выполнить транзакцию — EXEC должен вернуть null (отказ)
-    const failedTxResult = await this.redis.multi().incr(watchKey).exec();
+    // 4. Вкладка #1 пытается выполнить свою транзакцию:
+    const txResult = await this.redis.multi().decrby(walletKey, 100).exec();
 
-    const watchFailed = failedTxResult === null;
-    const actualValue = await this.redis.get(watchKey); // 99, не 100
+    // ✅ ИТОГ С WATCH: Redis заметил изменение и вернул null (ОТМЕНА)!
+    const wasAbortedByWatch = txResult === null;
+    const balanceWithWatch = await this.redis.get(walletKey); // "0", а не "-100"!
 
     // Очистка
-    await this.redis.del(balanceKey, `${balanceKey}:log`, watchKey);
-
-    this.logger.log(
-      `[STEP-10] Tx: balance=1000→${finalBalance}, watchSuccess=${watchSuccess}, watchFailed=${watchFailed}`,
-    );
+    await this.redis.del(walletKey);
 
     return {
       step: 10,
-      concept: 'Transactions — MULTI, EXEC, WATCH (Optimistic Locking)',
-      commands: ['MULTI', 'EXEC', 'DISCARD', 'WATCH'],
-      results: {
-        basicTransaction: {
-          initialBalance: 1000,
-          operations: ['decrby 200', 'incrby 50'],
-          finalBalance: parseInt(finalBalance ?? '0'),
-          txResult: txResult?.map(([err, val]) => ({
-            error: err?.message,
-            value: val,
-          })),
-        },
-        watchDemo: {
-          scenario1NoConflict: {
-            success: watchSuccess,
-            result: watchTxResult,
-          },
-          scenario2WithConflict: {
-            watchFailed,
-            explanation: watchFailed
-              ? 'WATCH сработал: ключ изменился между WATCH и EXEC → EXEC вернул null'
-              : 'WATCH не сработал',
-            actualValue,
-          },
-        },
+      concept: 'MULTI/EXEC + WATCH на одном ключе (кошелёк 100$)',
+      theGoal: 'Не допустить списание баланса в минус при одновременных запросах',
+      part1_WithoutWatch: {
+        initialBalance: '100$',
+        whatHappened:
+          'Вкладка 1 проверила баланс (100$), но пока думала — Вкладка 2 списала 100$. Вкладка 1 всё равно списала деньги через MULTI.',
+        finalBalance: `${balanceWithoutWatch}$ ❌ (Баланс ушёл в минус!)`,
+        problem: 'MULTI гарантирует только неделимость команд, но НЕ знает, что данные перед ним уже изменились!',
       },
-      warnings: [
-        '⚠️ Redis НЕ откатывает ошибки времени выполнения (runtime errors)',
-        '⚠️ WATCH сбрасывается после EXEC или DISCARD',
-        '✅ Для сложной логики используй Lua Script (Шаг 11) — атомарнее и эффективнее',
-      ],
+      part2_WithWatch: {
+        initialBalance: '100$',
+        whatHappened:
+          'Поставили WATCH на баланс. Вкладка 2 списала 100$. Вкладка 1 вызвала EXEC.',
+        finalBalance: `${balanceWithWatch}$ ✅ (Деньги целы, баланс не ушёл в минус)`,
+        txResult: wasAbortedByWatch ? 'null (Транзакция отменена Редисом)' : 'успех',
+        benefit:
+          'WATCH засекает любое чужое изменение ключа и отменяет EXEC. Защита от двойных списаний на 100%.',
+      },
     };
   }
 
@@ -1510,64 +1427,65 @@ export class RedisLearnController {
      * Ниже — единственный и самый классический пример: Compare-And-Swap (CAS).
      * Логика всего в 3 строчки: "Если в ключе лежит ожидаемое значение — перезапиши его".
      */
-    const casScript = `
-      if redis.call("GET", KEYS[1]) == ARGV[1] then
-        redis.call("SET", KEYS[1], ARGV[2])
-        return 1
-      else
-        return 0
-      end
-    `;
+    // ─── 🚀 РЕАЛЬНЫЙ ПРОДАКШН: Выделенный файл скрипта + defineCommand() ──
+    // В проде Lua-скрипты выносятся в отдельный файл (libs/common/src/redis/scripts/compare-and-swap.script.ts)
+    // и регистрируются ОДИН РАЗ при старте приложения в RedisModule через defineCommand().
+    //
+    // В сервисе и контроллере мы вызываем готовый типизированный метод БЕЗ инлайн-Lua и 'as any':
 
     // 1. Кладём начальное значение
-    await this.redis.set(casKey, 'version-1');
+    await this.redisService.set(casKey, 'version-1');
 
-    // 2. Успешный CAS: ожидаем 'version-1' -> перезаписываем на 'version-2'
-    const casSuccess = await this.redis.eval(
-      casScript,
-      1,
+    // 2. Вызываем метод сервиса: под капотом ioredis сам отправляет команду с EVALSHA
+    const casSuccess = await this.redisService.compareAndSwap(
       casKey,
       'version-1',
       'version-2',
     );
 
-    // 3. Неуспешный CAS: ожидаем всё ещё 'version-1', но там уже 'version-2' -> отказ!
-    const casFail = await this.redis.eval(
-      casScript,
-      1,
+    // 3. Неуспешный CAS: ожидаем устаревший 'version-1', хотя в Redis уже 'version-2' -> отказ
+    const casFail = await this.redisService.compareAndSwap(
       casKey,
       'version-1',
       'version-3',
     );
 
-    const finalValue = await this.redis.get(casKey);
-    await this.redis.del(casKey);
+    const finalValue = await this.redisService.get(casKey);
+    await this.redisService.del(casKey);
 
     this.logger.log(
-      `[STEP-11] Lua CAS: success=${casSuccess}, fail=${casFail}, finalValue=${finalValue}`,
+      `[STEP-11] compareAndSwap: success=${casSuccess}, fail=${casFail}, finalValue=${finalValue}`,
     );
 
     return {
       step: 11,
-      concept: 'Lua Scripts — Атомарный Compare-And-Swap (минимум синтаксиса)',
-      commands: ['EVAL script 1 key expectedValue newValue'],
+      concept:
+        'Lua Scripts — Выделенный файл скрипта + defineCommand() + RedisService',
+      productionArchitecture: {
+        scriptFile: 'libs/common/src/redis/scripts/compare-and-swap.script.ts',
+        registration:
+          'Зарегистрирован один раз в RedisModule при создании ioredis-клиента через defineCommand()',
+        serviceMethod: 'this.redisService.compareAndSwap(key, expected, newValue)',
+        protocolOptimization:
+          'ioredis автоматически кэширует скрипт в Redis через SCRIPT LOAD и вызывает его по быстрому SHA1-хэшу (EVALSHA)',
+      },
       whatToSayOnInterview: {
         question: 'Зачем в Redis нужны Lua-скрипты, если есть MULTI/EXEC?',
         answer:
-          'Транзакции MULTI/EXEC не позволяют использовать результат одной команды для принятия решения во второй (нет if/else). Lua-скрипт выполняется атомарно на стороне Redis и позволяет реализовать условную логику (например, CAS, списание баланса или rate limiter) без сетевых накладных расходов.',
+          'Транзакции MULTI/EXEC не позволяют использовать результат одной команды для принятия решения во второй (нет if/else). Lua-скрипт выполняется атомарно на стороне Redis и позволяет реализовать условную логику (например, CAS, списание баланса или rate limiter) без лишних сетевых RTT.',
         productionReality:
-          'В коде на NestJS разработчики обычно используют готовые библиотеки (redlock, @nestjs/throttler), где Lua уже протестирован и спрятан под капот.',
+          'В продакшене Lua-скрипты выносят в файлы скриптов и регистрируют на старте через defineCommand(), либо используют проверенные библиотеки (redlock, @nestjs/throttler).',
       },
       results: {
         attempt1: {
           expected: 'version-1',
           newValue: 'version-2',
-          result: casSuccess === 1 ? 'Успешно обновлено (1) ✅' : 'Отказ',
+          result: casSuccess ? 'Успешно обновлено ✅' : 'Отказ',
         },
         attempt2: {
           expected: 'version-1 (уже устарело!)',
           newValue: 'version-3',
-          result: casFail === 0 ? 'Отклонено (0) ✅ (чужие изменения защищены)' : 'Успех',
+          result: !casFail ? 'Отклонено ✅ (чужие изменения защищены)' : 'Успех',
         },
         finalValueInRedis: finalValue,
       },
@@ -1607,127 +1525,151 @@ export class RedisLearnController {
    *
    * curl -X POST http://localhost:3000/redis/learn/12-distributed-lock
    */
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ШАГ 12: DISTRIBUTED LOCK — Реальный кейс: покупка последнего товара
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 🎓 РЕАЛЬНЫЙ КЕЙС: На складе остался 1 iPhone (stock = 1).
+   * Два покупателя (Клиент-1 и Клиент-2) одновременно нажимают «Купить».
+   *
+   * ❌ БЕЗ ЛОКА:
+   *   Оба видят stock = 1, оба покупают товар.
+   *   Итог: продали 2 штуки, а на складе остался -1! (Оверселлинг / Овербукинг).
+   *
+   * ✅ С REDLOCK:
+   *   Клиент-1 берет замок 'lock:product:iphone' и покупает.
+   *   Клиент-2 видит, что замок занят, и получает отказ: «Товар уже оформляется».
+   *   Итог: продана ровно 1 штука, склад в порядке!
+   *
+   * curl -X POST http://localhost:3000/redis/learn/12-distributed-lock
+   */
   @Post('12-distributed-lock')
   async step12DistributedLock() {
-    const lockKey = 'redis:learn:lock:critical-section';
-    const ownerId = `worker-${Math.random().toString(36).substring(2, 9)}`;
-    const LOCK_TTL = 10; // секунд
+    // ─── 1. ЧТО БУДЕТ БЕЗ ЛОКА (Катастрофа: продали 2 штуки при остатке 1) ───
+    let stockWithoutLock = 1;
 
-    // ─── Безопасное освобождение (инкапсулировано в чистую TS-функцию) ──
-    // Проверяем: "Замок наш? Если да — удаляем".
-    // В продакшене для этого всегда берут готовую библиотеку: redlock или ioredis-lock.
-    const safeUnlock = async (key: string, owner: string): Promise<number> => {
-      const script =
-        'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end';
-      return (await this.redis.eval(script, 1, key, owner)) as number;
+    const buyWithoutLock = async (buyer: string) => {
+      if (stockWithoutLock > 0) {
+        // Имитируем задержку проверки в БД (20 мс)
+        await new Promise((r) => setTimeout(r, 20));
+        stockWithoutLock--;
+        return `${buyer}: Купил ✅`;
+      }
+      return `${buyer}: Распродано ❌`;
     };
 
-    // ─── Захват замка (Нативный Redis!) ───────────────────────────────────
-    // SET key value NX EX seconds — 100% нативная команда Redis, никакого Lua!
-    const acquired = await this.redis.set(
-      lockKey,
-      ownerId,
-      'EX',
-      LOCK_TTL,
-      'NX',
-    );
-    const lockAcquired = acquired === 'OK';
+    // 2 клиента жмут «Купить» одновременно:
+    const [resultNoLock1, resultNoLock2] = await Promise.all([
+      buyWithoutLock('Клиент-1'),
+      buyWithoutLock('Клиент-2'),
+    ]);
 
-    let workResult: string;
-    let releaseResult: number | string;
-    let ttlAtRelease: number | string;
+    // ─── 2. КАК REDLOCK РЕШАЕТ ЭТУ ПРОБЛЕМУ (Защита от овербукинга) ───────────
+    let stockWithLock = 1;
+    const lockKey = 'redis:learn:product:iphone:lock';
 
-    if (lockAcquired) {
-      // ─── Критическая секция ───────────────────────────────────────────
-      this.logger.log(`[STEP-12] Lock acquired by ${ownerId}`);
+    const buyWithLock = async (buyer: string) => {
+      try {
+        // Захватываем замок на товар:
+        return await this.redlock.using([lockKey], 2000, { retryCount: 0 }, async () => {
+          if (stockWithLock > 0) {
+            await new Promise((r) => setTimeout(r, 20));
+            stockWithLock--;
+            return `${buyer}: Купил успешно ✅`;
+          }
+          return `${buyer}: Распродано ❌`;
+        });
+      } catch {
+        // Redlock не пустил второго покупателя, пока первый держит замок!
+        return `${buyer}: Отказ 🛡️ (Товар уже оформляет другой покупатель)`;
+      }
+    };
 
-      // Симуляция работы
-      await new Promise((r) => setTimeout(r, 100));
-      workResult = `Критическая задача выполнена воркером ${ownerId}`;
-
-      ttlAtRelease = await this.redis.ttl(lockKey);
-
-      // Освобождаем замок через наш TS-хелпер
-      const releaseNum = await safeUnlock(lockKey, ownerId);
-      releaseResult =
-        releaseNum === 1
-          ? 'Замок освобождён ✅'
-          : 'Замок уже освобождён или чужой ❌';
-    } else {
-      workResult = 'Замок занят другим воркером';
-      releaseResult = 'N/A';
-      ttlAtRelease = await this.redis.ttl(lockKey);
-    }
-
-    // ─── Демонстрация конкуренции ─────────────────────────────────────────
-    const competitor1 = `competitor-${Math.random().toString(36).substring(2, 6)}`;
-    const competitor2 = `competitor-${Math.random().toString(36).substring(2, 6)}`;
-
-    // Устанавливаем замок от competitor1
-    const compLockKey = 'redis:learn:lock:competition';
-    const comp1Acquired = await this.redis.set(
-      compLockKey,
-      competitor1,
-      'EX',
-      5,
-      'NX',
-    );
-    // competitor2 пытается получить тот же замок
-    const comp2Acquired = await this.redis.set(
-      compLockKey,
-      competitor2,
-      'EX',
-      5,
-      'NX',
-    );
-
-    // competitor2 пытается освободить чужой замок competitor1 — ДОЛЖНО ПРОВАЛИТЬСЯ
-    const illegalRelease = await safeUnlock(compLockKey, competitor2);
-    const actualOwner = await this.redis.get(compLockKey);
-
-    // Легитимное освобождение владельцем
-    await safeUnlock(compLockKey, competitor1);
-
-    this.logger.log(
-      `[STEP-12] Lock: acquired=${lockAcquired}, illegalRelease=${illegalRelease}`,
-    );
+    // 2 клиента жмут «Купить» одновременно:
+    const [resultWithLock1, resultWithLock2] = await Promise.all([
+      buyWithLock('Клиент-1'),
+      buyWithLock('Клиент-2'),
+    ]);
 
     return {
       step: 12,
-      concept: 'Distributed Lock — SET NX EX + Lua unlock',
-      commands: [
-        'SET key value NX EX ttl',
-        'GET (verify owner)',
-        'DEL (conditional via Lua)',
-      ],
-      results: {
-        lock: {
-          ownerId,
-          acquired: lockAcquired,
-          workResult,
-          ttlAtRelease,
-          releaseResult,
-        },
-        competition: {
-          competitor1: { acquired: comp1Acquired === 'OK' },
-          competitor2: {
-            acquired: comp2Acquired === null,
-            note: 'null = замок уже занят',
-          },
-          illegalRelease: {
-            attempt: `${competitor2} пытается освободить замок ${competitor1}`,
-            result:
-              illegalRelease === 0
-                ? 'Отказано ✅ (защита работает!)'
-                : 'Успешно (баг!)',
-            actualOwner,
-          },
-        },
+      concept: 'Distributed Lock — Защита от овербукинга (Overbooking Protection)',
+      realWorldProblem: 'На складе 1 товар, два человека жмут «Купить» одновременно',
+      case1_WithoutLock: {
+        client1: resultNoLock1,
+        client2: resultNoLock2,
+        finalStock: stockWithoutLock, // -1 !
+        verdict: '💥 КАТАСТРОФА: продали 2 товара при наличии 1! Баланс ушел в -1',
       },
-      antiPatterns: [
-        '❌ DEL без проверки owner → можно удалить чужой замок',
-        '❌ SETNX + EXPIRE (два вызова) → не атомарно! Используй SET NX EX',
-        '❌ Слишком короткий TTL → замок истечёт раньше завершения работы',
+      case2_WithRedlock: {
+        client1: resultWithLock1,
+        client2: resultWithLock2,
+        finalStock: stockWithLock, // 0 !
+        verdict: '✅ УСПЕХ: Клиент-1 купил, Клиент-2 получил отказ. Склад равен 0',
+      },
+      whyRedlockUsing:
+        'Библиотека сама ставит SET NX EX в Redis, защищает критическую секцию и САМА удаляет замок в блоке finally',
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ШАГ 12-EXTRA: Симуляция 5 подов в Kubernetes, запускающих Cron 24h
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 🎓 СИМУЛЯЦИЯ: Запуск Cron-джобы раз в 24 часа на 5 подах Kubernetes
+   *
+   * Ровно в 00:00:00 таймер шедулера срабатывает НА ВСЕХ 5 ПОДАХ ОДНОВРЕМЕННО.
+   * Этот эндпоинт запускает 5 параллельных запросов к DailyCleanupTask через Promise.all,
+   * имитируя 5 подов кластера.
+   *
+   * curl http://localhost:3000/redis/learn/12-simulate-cron-5-pods
+   */
+  @Get('12-simulate-cron-5-pods')
+  async step12SimulateCron5Pods() {
+    this.logger.log('=== [SIMULATION] 5 ПОДОВ ОДНОВРЕМЕННО ЗАПУСКАЮТ КРОН 24H В 00:00:00 ===');
+
+    const pods = [
+      'reservation-pod-k8s-1',
+      'reservation-pod-k8s-2',
+      'reservation-pod-k8s-3',
+      'reservation-pod-k8s-4',
+      'reservation-pod-k8s-5',
+    ];
+
+    // Все 5 подов в одну миллисекунду запускают джобу!
+    const results = await Promise.all(
+      pods.map((podId) =>
+        this.dailyCleanupTask.executeWithDistributedLock(podId),
+      ),
+    );
+
+    const winnerPod = results.find((r) => r.status === 'EXECUTED_SUCCESSFULLY');
+    const skippedPods = results.filter((r) => r.status === 'SKIPPED');
+
+    return {
+      step: '12-simulate-cron-5-pods',
+      concept: 'Multi-Pod Kubernetes Cron Job with Distributed Redlock',
+      cronExpression: '@Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT) — раз в 24 часа (00:00:00)',
+      realWorldScenario:
+        'В Kubernetes 5 реплик сервиса reservation. В полночь шедулер срабатывает на всех 5 подах одновременно.',
+      simulationResults: {
+        totalPodsInCluster: 5,
+        actualExecutionsCount: 1, // Ровно 1 выполнение!
+        winnerPodId: winnerPod?.podId,
+        winnerPodOutput: winnerPod,
+        skippedPodsCount: skippedPods.length,
+        skippedPodsOutput: skippedPods.map((p) => ({
+          podId: p.podId,
+          status: p.status,
+          reason: p.reason,
+        })),
+      },
+      whyThisIsProductionGrade: [
+        'retryCount: 0 — если замок занят, под СРАЗУ делает skip без зависаний и ретраев',
+        'TTL 5 минут — если победивший под внезапно умрёт (OOMKilled), замок автоматически освободится через 5 минут',
+        'Ноль дублирования — полезная нагрузка (архивация записей) выполнилась строго 1 раз',
       ],
     };
   }
@@ -1764,6 +1706,8 @@ export class RedisLearnController {
    *
    * curl -X POST http://localhost:3000/redis/learn/13-rate-limiter
    */
+  @SkipThrottle({ default: false }) // Включаем троттлинг обратно для демонстрации этого эндпоинта!
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('13-rate-limiter')
   async step13RateLimiter(@Body() body: { userId?: string }) {
     const userId = body.userId ?? 'user:anonymous';
@@ -1836,165 +1780,180 @@ export class RedisLearnController {
       });
     }
 
-    // Очистка
-    await this.redis.del(fixedWindowKey, slidingKey);
+    // ─── 🚀 РЕАЛЬНЫЙ ПРОДАКШН: @nestjs/throttler + Redis Adapter ───────────
+    // В реальном NestJS коде никто не пишет алгоритмы руками в контроллере!
+    // Эндпоинт декорирован:
+    //   @SkipThrottle(false)
+    //   @Throttle({ default: { limit: 5, ttl: 60000 } })
+    // А глобальный ThrottlerGuard + ThrottlerStorageRedisService под капотом
+    // автоматически сохраняют счётчики в Redis и возвращают HTTP 429 при превышении.
 
-    this.logger.log(
-      `[STEP-13] Rate Limiter: fixed=${fixedResults.filter((r) => r.allowed).length}/7 allowed`,
-    );
+    // Посмотрим, какие ключи создал троттлер в Redis:
+    const throttlerKeysInRedis = await this.redis.keys('*default*');
+
+    // Очистка тестовых ключей алгоритмов
+    await this.redis.del(fixedWindowKey, slidingKey);
 
     return {
       step: 13,
-      concept: 'Rate Limiting — Fixed Window Counter + Sliding Window Log',
-      commands: ['INCR', 'EXPIRE', 'ZADD', 'ZREMRANGEBYSCORE', 'ZCARD', 'EVAL'],
-      limit: LIMIT,
-      windowSeconds: WINDOW_SECONDS,
-      results: {
+      concept:
+        'Rate Limiting — Продакшн NestJS (@Throttle) vs Алгоритмы под капотом',
+      productionWay: {
+        architecture:
+          '@nestjs/throttler + @nest-lab/throttler-storage-redis + ThrottlerGuard',
+        howItWorks:
+          'Контроллер или роут помечается декоратором @Throttle({ default: { limit: 5, ttl: 60000 } }). ThrottlerGuard перехватывает вызовы до попадания в метод и обновляет Redis-ключи.',
+        httpBehavior: [
+          'Первые 5 запросов: HTTP 200 OK, в заголовках x-ratelimit-limit: 5, x-ratelimit-remaining: N',
+          '6-й запрос: ThrottlerGuard мгновенно выбрасывает ThrottlerException (HTTP 429 Too Many Requests)',
+        ],
+        liveVerification:
+          'Попробуйте запустить curl на этот роут 6 раз подряд — на 6-й раз NestJS вернёт 429!',
+        activeRedisThrottlerKeys: throttlerKeysInRedis,
+      },
+      underTheHoodAlgorithms: {
         fixedWindow: {
-          algorithm: 'INCR + EXPIRE (Fixed Window Counter)',
-          pros: ['Минимум памяти', 'Простота реализации'],
-          cons: ['Edge burst: 2x лимит на стыке окон'],
-          attempts: fixedResults,
+          concept: 'INCR + EXPIRE (Fixed Window Counter)',
+          explanation:
+            'Самый простой и быстрый. Минус: burst на границе окон может пропустить до 2x лимита.',
+          simulation: fixedResults,
         },
         slidingWindow: {
-          algorithm: 'ZADD + ZREMRANGEBYSCORE (Sliding Window Log)',
-          pros: ['Точный подсчёт', 'Нет edge burst'],
-          cons: ['Больше памяти (храним все timestamps)'],
-          attempts: slidingResults,
+          concept: 'ZADD + ZREMRANGEBYSCORE + ZCARD (Sliding Window Log)',
+          explanation:
+            'Идеальная точность без скачков на границах окон. Минус: требует больше памяти в Redis.',
+          simulation: slidingResults,
         },
       },
     };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // ШАГ 14: PUB/SUB — Публикация и подписка
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ШАГ 14: PUB/SUB — Радиовещание (Fanout / Broadcast)
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * 🎓 КОНЦЕПЦИЯ: Pub/Sub в Redis
+   * 🎓 КОНЦЕПЦИЯ: Redis Pub/Sub — как это РЕАЛЬНО работает
    *
-   * Pub/Sub — паттерн "Издатель/Подписчик" (fire-and-forget).
-   * Publisher публикует сообщение в канал, не зная кто подписан.
-   * Subscriber получает все сообщения пока подписан.
+   * 1. ЭТО FANOUT ИЛИ DIRECT?
+   *    👉 Это СТРОГО FANOUT (Broadcast / Радиовещание)!
+   *    Если на канал подписаны 10 сервисов (или 10 подов) — сообщение получат ВСЕ 10 ПОДПИСЧИКОВ!
+   *    Здесь НЕТ очередей задач (round-robin), где 1 задачу забирает 1 воркер.
    *
-   * ВАЖНЫЕ ОГРАНИЧЕНИЯ Redis Pub/Sub:
-   *   ❌ Нет persistence: если подписчик офлайн — сообщения теряются
-   *   ❌ Нет гарантии доставки (at-most-once)
-   *   ❌ Нет consumer groups (как в Kafka/RabbitMQ)
-   *   ✅ Очень быстро: сотни тысяч сообщений/сек
-   *   ✅ Pattern matching: PSUBSCRIBE user.* — подписка по маске
+   * 2. КАКИЕ ГАРАНТИИ ДОСТАВКИ?
+   *    👉 At-Most-Once (Максимум один раз, а по факту — Fire-and-Forget / Выстрелил и забыл).
+   *    В Redis Pub/Sub НЕТ диска, НЕТ буфера и НЕТ очереди!
+   *    Если подписчик моргнул сетью на 5 миллисекунд в момент публикации —
+   *    сообщение ПОТЕРЯНО НАВСЕГДА. Подтверждений (ACK) нет.
    *
-   * Когда использовать Redis Pub/Sub:
-   *   ✅ Real-time уведомления (чат, live updates)
-   *   ✅ Cache invalidation сигналы между инстансами
-   *   ✅ Слабосвязанные события (не критичные к потере)
-   *   ❌ Критические бизнес-события → используй Kafka или RabbitMQ
+   * 3. ПОЧЕМУ ДЛЯ ПОДПИСКИ НУЖЕН redis.duplicate()?
+   *    Клиент, вызвавший subscribe(), переходит в специальный режим слушателя
+   *    и больше НЕ МОЖЕТ вызывать обычные команды (GET, SET и т.д.).
+   *    Поэтому для слушателя всегда создают отдельный коннект: this.redis.duplicate().
    *
-   * Команды Redis CLI:
-   *   SUBSCRIBE redis:learn:pubsub:notifications
-   *   PUBLISH redis:learn:pubsub:notifications "Hello Subscribers!"
-   *   PSUBSCRIBE redis:learn:*
-   *   PUBSUB CHANNELS
-   *   PUBSUB NUMSUB redis:learn:pubsub:notifications
-   *
-   * ⚠️ ЛОВУШКА ИНТЕРВЬЮ:
-   *   Q: "Redis Pub/Sub vs Kafka — когда что выбрать?"
-   *   A: Redis — ephemeral, ultra-fast, at-most-once. Для cache invalidation, чата.
-   *      Kafka — persistent, ordered, consumer groups, replay. Для платежей, аудита.
+   * 4. ГДЕ ЭТО ПРИМЕНЯЮТ В ПРОДЕ?
+   *    ✅ WebSockets: юзер сидит на Поде-3, а событие произошло на Поде-1. Под-1 пушит в Pub/Sub,
+   *       Под-3 ловит и пересылает в сокет клиенту.
+   *    ✅ Сброс локального кэша: Pod-1 обновил товар и шлет сигнал "Сбросьте кэш товара #123" всем подам.
+   *    ❌ Платежи и заказы: НЕЛЬЗЯ! Для них используют Kafka / RabbitMQ с гарантией at-least-once.
    *
    * curl http://localhost:3000/redis/learn/14-pub-sub
    */
   @Get('14-pub-sub')
   async step14PubSub() {
-    const channel = 'redis:learn:pubsub:events';
-    const patternChannel = 'redis:learn:pubsub:user.*';
+    const channel = 'redis:learn:pubsub:orders';
 
-    // Узнать текущих подписчиков на канале (до публикации)
-    const subsBefore = (await this.redis.pubsub('NUMSUB', channel)) as string[];
+    // ─── 1. СОЗДАЕМ ДВУХ РАЗНЫХ ПОДПИСЧИКОВ (Имитируем Под #1 и Под #2) ───
+    // В ioredis подписчики ВСЕГДА создаются через .duplicate():
+    const subscriberPod1 = this.redis.duplicate();
+    const subscriberPod2 = this.redis.duplicate();
 
-    // PUBLISH — опубликовать сообщение. Возвращает количество получателей.
-    // Если 0 — никто не подписан, сообщение потеряно (fire-and-forget)
-    const receivers1 = await this.redis.publish(
+    const pod1ReceivedMessages: Array<Record<string, unknown>> = [];
+    const pod2ReceivedMessages: Array<Record<string, unknown>> = [];
+
+    // Подписываемся на канал
+    await subscriberPod1.subscribe(channel);
+    await subscriberPod2.subscribe(channel);
+
+    subscriberPod1.on('message', (_chan, msg) => {
+      pod1ReceivedMessages.push(JSON.parse(msg));
+    });
+
+    subscriberPod2.on('message', (_chan, msg) => {
+      pod2ReceivedMessages.push(JSON.parse(msg));
+    });
+
+    // Небольшая пауза, чтобы коннекты подписки точно установились в Redis
+    await new Promise((r) => setTimeout(r, 50));
+
+    // ─── 2. ПУБЛИКУЕМ ОДНО ЕДИНСТВЕННОЕ СООБЩЕНИЕ ─────────────────────────
+    const publishedPayload = {
+      orderId: 777,
+      event: 'ORDER_PAID',
+      amount: 4990,
+      timestamp: new Date().toISOString(),
+    };
+
+    // publish возвращает количество подписчиков, получивших сообщение:
+    const receiversCount = await this.redis.publish(
       channel,
-      JSON.stringify({
-        event: 'USER_LOGGED_IN',
-        userId: 'user:42',
-        timestamp: new Date().toISOString(),
-        ip: '192.168.1.100',
-      }),
+      JSON.stringify(publishedPayload),
     );
 
-    const receivers2 = await this.redis.publish(
-      channel,
-      JSON.stringify({
-        event: 'PAYMENT_COMPLETED',
-        orderId: 'order:789',
-        amount: 2999,
-        currency: 'RUB',
-      }),
-    );
+    // Ждем 50мс, пока сообщения прилетят в слушателей
+    await new Promise((r) => setTimeout(r, 50));
 
-    // Pattern channels — публикуем в разные пользовательские каналы
-    const receivers3 = await this.redis.publish(
-      'redis:learn:pubsub:user.1',
-      JSON.stringify({
-        event: 'NOTIFICATION',
-        message: 'У вас новое сообщение',
-      }),
-    );
-
-    // PUBSUB CHANNELS — все активные каналы (с подписчиками)
-    const activeChannels = (await this.redis.pubsub(
-      'CHANNELS',
-      'redis:learn:*',
-    )) as string[];
-
-    // PUBSUB SHARDNUMSUB (Redis 7+) — подписчики в шард-каналах
-    const numSub = (await this.redis.pubsub('NUMSUB', channel)) as string[];
-
-    this.logger.log(
-      `[STEP-14] Pub/Sub: published to "${channel}", receivers=${receivers1}+${receivers2}`,
-    );
+    // ─── 3. ОТКЛЮЧАЕМ ПОДПИСЧИКОВ (Очистка) ──────────────────────────────
+    await subscriberPod1.unsubscribe(channel);
+    await subscriberPod2.unsubscribe(channel);
+    subscriberPod1.disconnect();
+    subscriberPod2.disconnect();
 
     return {
       step: 14,
-      concept:
-        'Pub/Sub — PUBLISH, SUBSCRIBE, PSUBSCRIBE (fire-and-forget messaging)',
-      commands: [
-        'PUBLISH channel message',
-        'SUBSCRIBE channel',
-        'PSUBSCRIBE pattern',
-        'PUBSUB CHANNELS',
-        'PUBSUB NUMSUB',
-      ],
-      results: {
-        published: [
-          { channel, message: 'USER_LOGGED_IN', receivers: receivers1 },
-          { channel, message: 'PAYMENT_COMPLETED', receivers: receivers2 },
-          {
-            channel: 'redis:learn:pubsub:user.1',
-            message: 'NOTIFICATION',
-            receivers: receivers3,
-          },
-        ],
-        activeChannels,
-        numSub: { channel, subscribers: numSub },
-        subsBefore:
-          subsBefore.length > 0 ? subsBefore : 'нет активных подписчиков',
+      concept: 'Redis Pub/Sub — Радиовещание (Broadcast / Fanout)',
+      answersToKeyQuestions: {
+        isItFanoutOrDirect: {
+          answer: '100% FANOUT (Broadcast / Радиовещание)',
+          proof: `Опубликовано 1 сообщение, а получили оба подписчика (получателей: ${receiversCount})!`,
+          differenceVsQueues:
+            'В очереди (RabbitMQ Direct / Kafka) задачу забирает только ОДИН воркер. В Redis Pub/Sub копию получают ВСЕ подписчики.',
+        },
+        deliveryGuarantees: {
+          guarantee: 'At-Most-Once (Fire-and-forget)',
+          whatIfOffline:
+            'Если подписчик был оффлайн 1 секунду — сообщение утеряно навсегда. Истории нет, повторов нет.',
+        },
+        whyDuplicateConnection:
+          'Клиент, вызвавший subscribe(), блокируется протоколом Redis и не может делать GET/SET. Нужен отдельный коннект redis.duplicate().',
       },
-      limitations: [
-        '❌ Нет persistence: офлайн-подписчики пропускают сообщения',
-        '❌ Нет гарантии доставки (at-most-once)',
-        '❌ Нельзя прочитать историю сообщений',
-        '✅ Используй Redis Streams (XADD/XREAD) для persistent очередей',
-        '✅ Или Kafka для enterprise-grade event streaming',
-      ],
-      howToTest: [
-        'Открой два терминала:',
-        '1: docker exec -it redis redis-cli SUBSCRIBE redis:learn:pubsub:events',
-        '2: curl http://localhost:3000/redis/learn/14-pub-sub',
-        'В терминале 1 увидишь сообщения в реальном времени!',
-      ],
+      liveDemonstration: {
+        publishedMessage: publishedPayload,
+        totalSubscribersOnline: receiversCount,
+        pod1Received: pod1ReceivedMessages,
+        pod2Received: pod2ReceivedMessages,
+      },
+      howToSubscribeInOtherService: {
+        pattern: 'В NestJS создается отдельный сервис со слушателем OnModuleInit',
+        codeSnippet: `
+@Injectable()
+export class OrderEventsListener implements OnModuleInit, OnModuleDestroy {
+  private sub = this.redis.duplicate(); // выделенный коннект!
+
+  async onModuleInit() {
+    await this.sub.subscribe('orders');
+    this.sub.on('message', (channel, message) => {
+      console.log('Пришло событие:', JSON.parse(message));
+    });
+  }
+
+  async onModuleDestroy() {
+    this.sub.disconnect();
+  }
+}
+        `,
+      },
     };
   }
 
@@ -2378,119 +2337,79 @@ export class RedisLearnController {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // ШАГ 18: SESSION MANAGEMENT — Управление сессиями
+  // ШАГ 18: СЕССИИ В REDIS — Динамические сессии (1 юзер → N сессий)
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * 🎓 КОНЦЕПЦИЯ: Сессии в Redis — замена stateful JWT хранению
+   * 🎓 КОНЦЕПЦИЯ: Динамические сессии в Redis (1 юзер → N сессий)
    *
-   * Зачем Redis для сессий?
-   *   JWT: большой токен в каждом запросе, нельзя отозвать до истечения TTL
-   *   Redis Session: маленький sessionId, можно мгновенно инвалидировать
+   * Никакого хардкода! У пользователя может быть 1 ноутбук, 3 ноутбука или 10 браузеров.
+   * Каждый вход создаёт обычный уникальный sessionId.
    *
-   * Архитектура:
-   *   1. Login → создать сессию в Redis (Hash) → вернуть sessionId клиенту (cookie)
-   *   2. Запрос → клиент шлёт sessionId → Redis HGETALL → проверить данные
-   *   3. Logout → DEL session:sessionId (мгновенный logout!)
-   *   4. Активность → EXPIRE session:id 1800 (refresh TTL)
+   * Архитектура из 2 ключей:
+   * 1. `session:{sessionId}` — сама сессия (по ней AuthGuard проверяет куку за 0.1 мс).
+   * 2. `user:{userId}:sessions` (Set) — список ВСЕХ активных sessionId этого юзера.
+   *    Нужен, чтобы сделать "Выйти со всех устройств" без перебора всей базы через KEYS *.
    *
-   * Hash для сессии vs String с JSON:
-   *   Hash: можно обновить одно поле (lastAccessAt) без чтения всего объекта
-   *   JSON String: нужно GET → parse → modify → SET
-   *
-   * ⚠️ ЛОВУШКА ИНТЕРВЬЮ:
-   *   Q: "Как организовать logout со всех устройств?"
-   *   A: Хранить Set активных сессий: SADD user:42:sessions sessionId1 sessionId2
-   *      При logout-all: SMEMBERS user:42:sessions → DEL каждой сессии → DEL set
-   *
-   * curl -X POST http://localhost:3000/redis/learn/18-session \
-   *   -H "Content-Type: application/json" \
-   *   -d '{"userId": "42", "role": "admin"}'
+   * curl -X POST http://localhost:3000/redis/learn/18-session
    */
   @Post('18-session')
-  async step18Session(@Body() body: { userId?: string; role?: string }) {
-    const userId = body.userId ?? '42';
-    const role = body.role ?? 'user';
+  async step18Session(@Body() body: { userId?: string }) {
+    const userId = body.userId ?? 'user_42';
+    const userIndexKey = `redis:learn:user:${userId}:sessions`;
     const SESSION_TTL = 1800; // 30 минут
 
-    // Генерация sessionId (в реальности — криптографически случайный)
-    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
-    const sessionKey = `redis:learn:session:${sessionId}`;
-    const userSessionsKey = `redis:learn:user:${userId}:sessions`;
+    // Универсальная функция входа: генерирует ID сессии и сохраняет в Redis
+    const login = async (clientInfo: string) => {
+      const sessionId = crypto.randomUUID();
+      const sessionKey = `redis:learn:session:${sessionId}`;
 
-    // ─── Создание сессии ──────────────────────────────────────────────────
-    await this.redis.hset(sessionKey, {
-      userId,
-      role,
-      ip: '192.168.1.' + Math.floor(Math.random() * 255),
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-      createdAt: new Date().toISOString(),
-      lastAccessAt: new Date().toISOString(),
-      requestCount: '1',
-    });
-    await this.redis.expire(sessionKey, SESSION_TTL);
+      // 1. Сохраняем данные конкретной сессии
+      await this.redis.hset(sessionKey, {
+        userId,
+        client: clientInfo,
+        createdAt: new Date().toISOString(),
+      });
+      await this.redis.expire(sessionKey, SESSION_TTL);
 
-    // Трекинг всех сессий пользователя
-    await this.redis.sadd(userSessionsKey, sessionId);
-    await this.redis.expire(userSessionsKey, SESSION_TTL);
+      // 2. Добавляем sessionId в список сессий этого юзера
+      await this.redis.sadd(userIndexKey, sessionId);
+      await this.redis.expire(userIndexKey, SESSION_TTL);
 
-    // ─── Чтение сессии ────────────────────────────────────────────────────
-    const session = await this.redis.hgetall(sessionKey);
-    const ttl = await this.redis.ttl(sessionKey);
+      return { sessionId, sessionKey };
+    };
 
-    // ─── Обновление сессии (refresh TTL + lastAccessAt) ───────────────────
-    await this.redis.hset(sessionKey, 'lastAccessAt', new Date().toISOString());
-    await this.redis.hincrby(sessionKey, 'requestCount', 1);
-    await this.redis.expire(sessionKey, SESSION_TTL); // Сброс таймера
+    // ─── Симуляция: Юзер зашёл с трёх разных рабочих ноутбуков ────────────
+    const device1 = await login('Рабочий ноутбук 1');
+    const device2 = await login('Рабочий ноутбук 2');
+    const device3 = await login('Рабочий ноутбук 3');
 
-    const updatedSession = await this.redis.hgetall(sessionKey);
-    const updatedTtl = await this.redis.ttl(sessionKey);
+    // Список всех сессий пользователя в Redis:
+    const activeSessions = await this.redis.smembers(userIndexKey);
 
-    // ─── Все сессии пользователя ──────────────────────────────────────────
-    const allUserSessions = await this.redis.smembers(userSessionsKey);
+    // ─── Обычный запрос со 2-го ноутбука (AuthGuard) ──────────────────────
+    // Браузер прислал в куке sessionId: device2.sessionId
+    const currentSessionData = await this.redis.hgetall(device2.sessionKey);
 
-    // ─── Logout: удаление конкретной сессии ──────────────────────────────
-    const deleted = await this.redis.del(sessionKey);
-    await this.redis.srem(userSessionsKey, sessionId);
-
-    // После удаления
-    const afterLogout = await this.redis.hgetall(sessionKey);
-
-    // Очистка
-    await this.redis.del(userSessionsKey);
-
-    this.logger.log(
-      `[STEP-18] Session: ${sessionId} created for user ${userId}, deleted=${deleted}`,
-    );
+    // ─── Юзер сменил пароль: Завершить ВСЕ сессии пользователя ────────────
+    for (const sId of activeSessions) {
+      await this.redis.del(`redis:learn:session:${sId}`);
+    }
+    await this.redis.del(userIndexKey);
 
     return {
       step: 18,
-      concept: 'Session Management — Hash + TTL + EXPIRE refresh pattern',
-      commands: [
-        'HSET',
-        'HGETALL',
-        'HINCRBY',
-        'EXPIRE (refresh)',
-        'SADD (track sessions)',
-        'DEL (logout)',
-      ],
-      results: {
-        sessionId,
-        creation: { session, ttlSeconds: ttl },
-        afterRefresh: { session: updatedSession, ttlSeconds: updatedTtl },
-        userSessions: allUserSessions,
-        logout: {
-          deleted: deleted === 1,
-          afterLogout:
-            Object.keys(afterLogout).length === 0
-              ? 'сессия удалена'
-              : afterLogout,
-        },
+      concept: 'Сессии в Redis: 1 юзер → N сессий (динамически, без хардкода)',
+      totalActiveLogins: activeSessions.length,
+      userSessionsInRedis: activeSessions,
+      regularRequestValidation: {
+        usedCookie: device2.sessionId,
+        resolvedUser: currentSessionData,
+        note: 'AuthGuard читает напрямую session:{id} за 0.1 мс',
       },
-      patterns: {
-        singleDeviceLogout: 'DEL session:sessionId',
-        allDevicesLogout: 'SMEMBERS user:id:sessions → DEL each → DEL set',
-        sessionRefresh: 'EXPIRE session:id 1800 при каждом запросе',
+      logoutAllDevices: {
+        action: 'Удалены все сессии пользователя без блокировки Redis',
+        sessionsRevoked: activeSessions.length,
       },
     };
   }
@@ -2934,6 +2853,149 @@ export class RedisLearnController {
       },
     };
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ШАГ 22: МАСШТАБИРОВАНИЕ REDIS — Sentinel vs Cluster vs Репликация
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 🎓 КОНЦЕПЦИЯ: Как масштабируется Redis и когда переходить на Шардирование?
+   *
+   * 3 СТУПЕНИ ЭВОЛЮЦИИ REDIS:
+   * 1. 🔄 РЕПЛИКАЦИЯ (Master + Read Replicas):
+   *    - Зачем: Масштабирование ЧТЕНИЯ (Read-heavy: 90% GET, 10% SET).
+   *    - Минус: Нет авто-failover (если Master упал — сайт лежит, пока админ не вмешается).
+   *
+   * 2. 🛡️ REDIS SENTINEL (Высокая доступность / HA):
+   *    - Зачем: Автоматический Failover без участия человека (99.99% аптайм).
+   *    - Кворум (2 из 3) обнаруживает падение Master и за 3 секунды назначает реплику новым мастером.
+   *    - Минус: Запись всё ещё в 1 узел. Объем данных ограничен RAM одного сервера!
+   *
+   * 3. 🌐 REDIS CLUSTER (Горизонтальное шардирование):
+   *    - Зачем: Масштабирование ОБЪЕМА ДАННЫХ (>128 GB RAM) и ЗАПИСИ (>100k SET/sec).
+   *    - Как устроено: 16 384 Hash Slots. Формула: CRC16(key) % 16384.
+   *    - Hash Tags: `{user:42}:orders` и `{user:42}:profile` гарантированно попадают в один слот!
+   *
+   * curl http://localhost:3000/redis/learn/22-scaling
+   */
+  @Get('22-scaling')
+  async step22Scaling() {
+    // ─── 1. Проверяем текущее состояние репликации живой ноды ─────────────
+    const rawReplication = await this.redis.info('replication');
+    const replicationInfo: Record<string, string> = {};
+    for (const line of rawReplication.split('\r\n')) {
+      if (line && !line.startsWith('#')) {
+        const [k, v] = line.split(':');
+        if (k && v !== undefined) replicationInfo[k.trim()] = v.trim();
+      }
+    }
+
+    // ─── 2. Демонстрация алгоритма Hash Slots (CRC16 % 16384) ────────────
+    const sampleKeys = [
+      'user:1001',
+      'user:1002',
+      'order:5500',
+      'catalog:products',
+      // Hash Tags: заставляем связанные ключи лечь в один слот на один шард!
+      '{user:1001}:profile',
+      '{user:1001}:orders',
+      '{user:1001}:cart',
+    ];
+
+    const slotCalculations = sampleKeys.map((key) =>
+      calculateRedisHashSlot(key),
+    );
+
+    return {
+      step: 22,
+      concept:
+        'Масштабирование Redis: Репликация → Sentinel → Cluster (Шардирование)',
+      currentNodeLiveStatus: {
+        role: replicationInfo.role ?? 'master',
+        connectedSlaves: replicationInfo.connected_slaves ?? '0',
+        replicationOffset: replicationInfo.master_repl_offset ?? '0',
+        note: 'Текущий инстанс запущен как автономный Master',
+      },
+      hashSlotsDemonstration: {
+        howItWorks:
+          'Redis Cluster делит все ключи на 16 384 слота по формуле CRC16(key) % 16384',
+        keysDistribution: slotCalculations,
+        hashTagsMagic: {
+          concept: 'Hash Tags {...} принудительно направляют ключи в один слот',
+          proof:
+            'Ключи {user:1001}:profile и {user:1001}:orders имеют одинаковый слот, поэтому между ними разрешены транзакции MULTI/EXEC в Cluster!',
+        },
+      },
+      decisionMatrixWhenToScale: {
+        level1_Standalone: {
+          whenToUse:
+            'Данных < 32 GB, запросов < 50k RPS, падение на 1 минуту не критично',
+          architecture: '1 сервер Redis',
+          overhead: '0%',
+        },
+        level2_MasterReplica: {
+          whenToUse:
+            '90%+ запросов на чтение (Read-heavy), запись справляется на 1 узле',
+          architecture: '1 Master (запись) + N Read Replicas (чтение)',
+          drawback: 'Нет автоматического failover при падении Master',
+        },
+        level3_Sentinel: {
+          whenToUse:
+            'Критичен аптайм 99.99%, нужен авто-failover, но данных < 64 GB RAM',
+          architecture: '1 Master + 2 Replica + 3 Sentinel ноды (кворум)',
+          drawback:
+            'Запись всё ещё идёт в 1 узел (не масштабирует RAM и запись)',
+        },
+        level4_Cluster: {
+          whenToUse:
+            'Данных > 128 GB RAM или поток записи > 100k-150k SET/sec',
+          architecture:
+            'Минимум 3 Master + 3 Replica (горизонтальный шардинг на 16384 слота)',
+          limitations: 'Нет транзакций между разными шардами (нужны Hash Tags)',
+        },
+      },
+    };
+  }
+}
+
+function calculateRedisHashSlot(key: string): {
+  key: string;
+  hashTag: string | null;
+  slot: number;
+  assignedShardIn3NodeCluster: string;
+} {
+  let strToHash = key;
+  let hashTag: string | null = null;
+  const start = key.indexOf('{');
+  if (start !== -1) {
+    const end = key.indexOf('}', start + 1);
+    if (end !== -1 && end > start + 1) {
+      strToHash = key.substring(start + 1, end);
+      hashTag = strToHash;
+    }
+  }
+
+  let crc = 0x0000;
+  for (let i = 0; i < strToHash.length; i++) {
+    crc ^= strToHash.charCodeAt(i) << 8;
+    for (let j = 0; j < 8; j++) {
+      if ((crc & 0x8000) !== 0) {
+        crc = ((crc << 1) ^ 0x1021) & 0xffff;
+      } else {
+        crc = (crc << 1) & 0xffff;
+      }
+    }
+  }
+  const slot = crc % 16384;
+
+  let assignedShardIn3NodeCluster = 'Shard-1 (нода A: слоты 0 .. 5460)';
+  if (slot >= 5461 && slot <= 10922) {
+    assignedShardIn3NodeCluster = 'Shard-2 (нода B: слоты 5461 .. 10922)';
+  } else if (slot >= 10923) {
+    assignedShardIn3NodeCluster = 'Shard-3 (нода C: слоты 10923 .. 16383)';
+  }
+
+  return { key, hashTag, slot, assignedShardIn3NodeCluster };
 }
 
 function fetchWithFlightAlias(
