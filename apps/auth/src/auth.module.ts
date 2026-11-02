@@ -8,7 +8,6 @@ import {
   KafkaModule,
   KAFKA_GROUPS,
 } from '@app/common';
-import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { AuthConsumer } from './auth.consumer';
@@ -16,6 +15,7 @@ import * as Joi from 'joi';
 import { LocalStrategy } from './strategies/local.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { PassportModule } from '@nestjs/passport';
+import { JwtModule } from '@nestjs/jwt';
 
 @Module({
   imports: [
@@ -23,7 +23,7 @@ import { PassportModule } from '@nestjs/passport';
     LoggerModule,
     HealthModule,
     CommonRabbitMqModule,
-    PassportModule.register({ defaultStrategy: 'jwt' }),
+    PassportModule.register({ defa: 'jwt' }),
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: './apps/auth/.env',
